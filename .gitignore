@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Editor / OS
+*.swp
+*~
+.idea/
+.vscode/
+
+# clasp (if adopted later) — keep .clasp.json out, .clasprc.json contains creds
+.clasprc.json

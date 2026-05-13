@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<style>
+  body {
+    font-family: 'Google Sans', Roboto, Arial, sans-serif;
+    font-size: 13px;
+    color: #202124;
+    padding: 14px;
+    margin: 0;
+  }
+  h3 { margin: 0 0 8px 0; font-size: 14px; font-weight: 500; }
+  p.hint {
+    color: #5f6368; font-size: 12px;
+    margin: 4px 0 12px 0; line-height: 1.4;
+  }
+  .step {
+    border-top: 1px solid #e8eaed;
+    padding-top: 14px; margin-top: 14px;
+  }
+  .step:first-child {
+    border-top: none; padding-top: 0; margin-top: 0;
+  }
+
+  button {
+    background: #1a73e8; color: white; border: none;
+    padding: 8px 16px; border-radius: 4px; cursor: pointer;
+    font-size: 13px; font-weight: 500;
+  }
+  button:disabled { background: #dadce0; color: #80868b; cursor: not-allowed; }
+  button.secondary {
+    background: white; color: #1a73e8;
+    border: 1px solid #dadce0; margin-left: 6px;
+  }
+
+  table.preview { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  table.preview th, table.preview td {
+    border-bottom: 1px solid #e8eaed;
+    padding: 6px 4px; text-align: left;
+    font-size: 12px;
+  }
+  table.preview th { color: #5f6368; font-weight: 500; }
+  table.preview td.amt { width: 90px; }
+  table.preview td.act { width: 24px; text-align: center; }
+  table.preview input {
+    width: 100%; padding: 3px 4px; font-size: 12px;
+    border: 1px solid transparent; border-radius: 3px;
+    background: transparent; font-family: inherit; color: inherit;
+    box-sizing: border-box;
+  }
+  table.preview input:hover { border-color: #dadce0; }
+  table.preview input:focus { border-color: #1a73e8; outline: none; background: white; }
+  table.preview input.amt { text-align: right; font-variant-numeric: tabular-nums; }
+  table.preview .remove {
+    cursor: pointer; color: #80868b; font-weight: bold;
+    user-select: none; padding: 2px 6px;
+  }
+  table.preview .remove:hover { color: #c5221f; }
+
+  .total-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 12px 0 8px 0; padding: 8px 0;
+    border-top: 2px solid #202124; font-weight: 500;
+  }
+  .total-row label { font-size: 13px; }
+  .total-row input {
+    width: 110px; padding: 4px 6px; font-size: 13px;
+    border: 1px solid #dadce0; border-radius: 4px;
+    text-align: right; font-variant-numeric: tabular-nums;
+    font-family: inherit; font-weight: 600; box-sizing: border-box;
+  }
+
+  .target-info {
+    background: #f1f3f4; padding: 8px 10px; border-radius: 4px;
+    font-size: 11px; color: #5f6368; margin: 10px 0;
+    line-height: 1.6;
+  }
+  .target-info code {
+    background: white; padding: 1px 4px; border-radius: 2px;
+    font-family: 'Roboto Mono', monospace; font-size: 11px; color: #202124;
+  }
+
+  .status {
+    padding: 8px 10px; background: #f1f3f4; border-radius: 4px;
+    margin: 10px 0 0 0; font-size: 12px; line-height: 1.4;
+  }
+  .status.error { background: #fce8e6; color: #c5221f; }
+  .status.success { background: #e6f4ea; color: #137333; }
+  .status.warn { background: #fef7e0; color: #b06000; }
+
+  #fileName { font-size: 12px; color: #5f6368; margin-left: 8px; }
+  input[type="file"] { font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="step" id="step-upload">
+  <h3>1. Upload Scope PDF</h3>
+  <p class="hint">Pick the totals/scope report from the carrier or estimating system. Gemini will extract categories and dollar amounts.</p>
+  <input type="file" id="pdfFile" accept="application/pdf">
+  <span id="fileName"></span>
+  <div style="margin-top: 10px;">
+    <button id="extractBtn" disabled>Extract line items</button>
+  </div>
+  <div id="extractStatus" class="status" style="display: none;"></div>
+</div>
+
+<div class="step" id="step-review" style="display: none;">
+  <h3>2. Review &amp; Confirm</h3>
+  <p class="hint">Edit any row that didn't extract right. Click × to remove. The grand total is editable too.</p>
+
+  <table class="preview">
+    <thead>
+      <tr>
+        <th>Category</th>
+        <th class="amt" style="text-align: right;">Scope Total</th>
+        <th class="act"></th>
+      </tr>
+    </thead>
+    <tbody id="lineItems"></tbody>
+  </table>
+
+  <div class="total-row">
+    <label for="grandTotal">Contract Total</label>
+    <input type="number" id="grandTotal" step="0.01">
+  </div>
+
+  <div id="targetInfo" class="target-info"></div>
+
+  <div id="overwriteWarn" class="status warn" style="display: none;">
+    Budget already has data. Continuing will clear C3:M50, then rewrite categories, totals, B5 and B11.
+  </div>
+
+  <div style="margin-top: 12px;">
+    <button id="writeBtn">Write to budget</button>
+    <button class="secondary" id="cancelBtn">Cancel</button>
+  </div>
+  <div id="writeStatus" class="status" style="display: none;"></div>
+</div>
+
+<script>
+let extracted = { lineItems: [], grandTotal: 0 };
+let hasExistingData = false;
+
+const fileInput = document.getElementById('pdfFile');
+const fileName = document.getElementById('fileName');
+const extractBtn = document.getElementById('extractBtn');
+const extractStatus = document.getElementById('extractStatus');
+const stepReview = document.getElementById('step-review');
+const lineItemsEl = document.getElementById('lineItems');
+const grandTotalInput = document.getElementById('grandTotal');
+const targetInfo = document.getElementById('targetInfo');
+const overwriteWarn = document.getElementById('overwriteWarn');
+const writeBtn = document.getElementById('writeBtn');
+const cancelBtn = document.getElementById('cancelBtn');
+const writeStatus = document.getElementById('writeStatus');
+
+google.script.run
+  .withSuccessHandler((s) => { hasExistingData = !!(s && s.hasExistingData); })
+  .withFailureHandler(() => {})
+  .checkBudgetState();
+
+fileInput.addEventListener('change', () => {
+  const f = fileInput.files[0];
+  if (f) {
+    fileName.textContent = f.name;
+    extractBtn.disabled = false;
+  } else {
+    fileName.textContent = '';
+    extractBtn.disabled = true;
+  }
+});
+
+extractBtn.addEventListener('click', () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  extractBtn.disabled = true;
+  extractBtn.textContent = 'Extracting…';
+  showInfo(extractStatus, 'Sending PDF to Gemini — usually 5–15 seconds…');
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    const base64 = reader.result.split(',')[1];
+    google.script.run
+      .withSuccessHandler((result) => {
+        extracted = {
+          lineItems: (result && result.lineItems) || [],
+          grandTotal: Number(result && result.grandTotal) || 0,
+        };
+        if (extracted.lineItems.length === 0) {
+          showError(extractStatus, 'No line items extracted. Try a different PDF or check that the document is readable.');
+          extractBtn.disabled = false;
+          extractBtn.textContent = 'Extract line items';
+          return;
+        }
+        extractStatus.style.display = 'none';
+        renderReview();
+      })
+      .withFailureHandler((err) => {
+        showError(extractStatus, err.message);
+        extractBtn.disabled = false;
+        extractBtn.textContent = 'Extract line items';
+      })
+      .extractFromPdf(base64, file.name);
+  };
+  reader.readAsDataURL(file);
+});
+
+function renderReview() {
+  lineItemsEl.innerHTML = '';
+  extracted.lineItems.forEach((item, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td><input type="text" data-idx="' + i + '" data-field="description" value="' + escapeAttr(item.description || '') + '"></td>' +
+      '<td class="amt"><input type="number" step="0.01" class="amt" data-idx="' + i + '" data-field="amount" value="' + (Number(item.amount) || 0) + '"></td>' +
+      '<td class="act"><span class="remove" data-idx="' + i + '" title="Remove">×</span></td>';
+    lineItemsEl.appendChild(tr);
+  });
+  grandTotalInput.value = extracted.grandTotal;
+  updateTargetInfo();
+
+  if (hasExistingData) {
+    overwriteWarn.style.display = 'block';
+  } else {
+    overwriteWarn.style.display = 'none';
+  }
+
+  stepReview.style.display = 'block';
+}
+
+function updateTargetInfo() {
+  const n = extracted.lineItems.length;
+  if (n === 0) {
+    targetInfo.innerHTML = 'No rows to write.';
+    return;
+  }
+  const lastDataRow = 3 + n - 1;
+  const subtotalRow = lastDataRow + 1;
+  targetInfo.innerHTML =
+    'Will write: <code>C3:C' + lastDataRow + '</code> categories · ' +
+    '<code>D3:D' + lastDataRow + '</code> scope totals · ' +
+    '<code>E3:E' + lastDataRow + '</code> total budget (=D×0.7) · ' +
+    'subtotal formulas in row <code>' + subtotalRow + '</code> (D–M) · ' +
+    '<code>B11 = SUM(F' + subtotalRow + ':M' + subtotalRow + ')</code> · ' +
+    '<code>B5</code> = contract total.';
+}
+
+lineItemsEl.addEventListener('input', (e) => {
+  const t = e.target;
+  const idx = Number(t.dataset.idx);
+  const field = t.dataset.field;
+  if (Number.isNaN(idx) || !field) return;
+  if (field === 'description') {
+    extracted.lineItems[idx].description = t.value;
+  } else if (field === 'amount') {
+    extracted.lineItems[idx].amount = Number(t.value) || 0;
+  }
+});
+
+lineItemsEl.addEventListener('click', (e) => {
+  if (!e.target.classList.contains('remove')) return;
+  const idx = Number(e.target.dataset.idx);
+  if (Number.isNaN(idx)) return;
+  extracted.lineItems.splice(idx, 1);
+  renderReview();
+});
+
+grandTotalInput.addEventListener('input', () => {
+  extracted.grandTotal = Number(grandTotalInput.value) || 0;
+});
+
+writeBtn.addEventListener('click', () => {
+  if (extracted.lineItems.length === 0) {
+    showError(writeStatus, 'No line items left. Cancel or upload a different PDF.');
+    return;
+  }
+
+  writeBtn.disabled = true;
+  writeBtn.textContent = 'Writing…';
+  writeStatus.style.display = 'none';
+
+  google.script.run
+    .withSuccessHandler((result) => {
+      writeStatus.style.display = 'block';
+      writeStatus.className = 'status success';
+      writeStatus.textContent =
+        'Wrote ' + result.rowsWritten + ' categories. Subtotals in row ' +
+        result.subtotalRow + '. Contract total $' + formatNum(result.grandTotal) + '.';
+      writeBtn.textContent = 'Done';
+    })
+    .withFailureHandler((err) => {
+      showError(writeStatus, err.message);
+      writeBtn.disabled = false;
+      writeBtn.textContent = 'Write to budget';
+    })
+    .writeBudget(extracted.lineItems, extracted.grandTotal);
+});
+
+cancelBtn.addEventListener('click', () => {
+  stepReview.style.display = 'none';
+  fileInput.value = '';
+  fileName.textContent = '';
+  extractBtn.disabled = true;
+  extractBtn.textContent = 'Extract line items';
+  extractStatus.style.display = 'none';
+  writeStatus.style.display = 'none';
+  extracted = { lineItems: [], grandTotal: 0 };
+});
+
+function showError(el, msg) {
+  el.style.display = 'block';
+  el.className = 'status error';
+  el.textContent = msg;
+}
+
+function showInfo(el, msg) {
+  el.style.display = 'block';
+  el.className = 'status';
+  el.textContent = msg;
+}
+
+function formatNum(n) {
+  return Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+</script>
+
+</body>
+</html>
