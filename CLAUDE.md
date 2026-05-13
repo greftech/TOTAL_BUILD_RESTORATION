@@ -10,6 +10,10 @@ Google Apps Script projects supporting Total Build Restoration's internal operat
   - `TBRBudgetTools/TBRBudgetTools.gs` — library: Gemini call, budget-sheet writes, formatting.
 - `Job Number Creation Form/` — Form-bound script. On submit, allocates the next `TBR-<year>-<seq>` job number, creates the project folder from a category template in Drive, and appends a row to the central tracking sheet.
 - `Job Number Creation Sheet Script/` — Sheet-bound script for the TBR Job Numbers tracking sheet. Edit trigger fires when "Create Job #?" flips to YES, retroactively provisioning folders / job numbers for rows that bypassed the form.
+- `Doc Gen/` — Second sheet-bound script on the TBR Job Numbers spreadsheet. Adds a "TBR Docs" menu + sidebar that merges project-row fields into Doc templates (Contract, Work Authorization, Mold Waiver, Certificate of Completion), saves PDF + editable Doc into the project's `Documents` subfolder, and dual-logs every generation (admin Activity tab + per-project Activity Log Doc). Config (doc types, placeholder map, required fields, activity log) lives in a separate admin spreadsheet, referenced by `CONFIG_SHEET_ID` at the top of `Code.gs`. `initializeConfigSheet` is a one-off scaffold function run from the Apps Script editor, not menu-wired. Uses the Advanced Drive Service (`supportsAllDrives: true`) so project folders inside shared drives work.
+  - `Code.gs` — menu, sidebar entry, `google.script.run` callbacks, merge engine, dual-log, one-time `initializeConfigSheet` bootstrap.
+  - `Sidebar.html` — vanilla HTML+JS sidebar (300px), project dropdown, validation block, doc-type checkboxes, generate + results.
+  - `appsscript.json` — manifest with Advanced Drive Service enabled and required OAuth scopes.
 
 ## Conventions
 

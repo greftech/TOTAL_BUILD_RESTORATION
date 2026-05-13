@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<style>
+  body {
+    font-family: 'Google Sans', Roboto, Arial, sans-serif;
+    font-size: 13px;
+    color: #202124;
+    padding: 12px;
+    margin: 0;
+  }
+  h2.job {
+    margin: 0 0 2px 0;
+    font-size: 15px;
+    font-weight: 600;
+    word-break: break-word;
+  }
+  .client {
+    color: #5f6368;
+    font-size: 12px;
+    margin-bottom: 10px;
+    word-break: break-word;
+  }
+  .row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+  select {
+    flex: 1; min-width: 0;
+    font-size: 12px; padding: 5px 6px;
+    border: 1px solid #dadce0; border-radius: 4px;
+    background: white; font-family: inherit;
+  }
+
+  button {
+    background: #1a73e8; color: white; border: none;
+    padding: 7px 12px; border-radius: 4px; cursor: pointer;
+    font-size: 12px; font-weight: 500;
+  }
+  button:disabled { background: #dadce0; color: #80868b; cursor: not-allowed; }
+  button.secondary {
+    background: white; color: #1a73e8;
+    border: 1px solid #dadce0;
+  }
+
+  .section {
+    border-top: 1px solid #e8eaed;
+    padding-top: 10px; margin-top: 10px;
+  }
+
+  .status {
+    padding: 8px 10px; background: #f1f3f4; border-radius: 4px;
+    margin: 4px 0 0 0; font-size: 12px; line-height: 1.4;
+  }
+  .status.error { background: #fce8e6; color: #c5221f; }
+  .status.success { background: #e6f4ea; color: #137333; }
+  .status.warn { background: #fef7e0; color: #b06000; }
+  .status ul { margin: 6px 0 0 0; padding-left: 18px; }
+  .status li { margin: 2px 0; }
+
+  .doctype {
+    display: flex; align-items: flex-start;
+    padding: 6px 0; border-top: 1px solid #f1f3f4;
+  }
+  .doctype:first-child { border-top: none; }
+  .doctype input[type="checkbox"] { margin-top: 3px; margin-right: 8px; }
+  .doctype-label { flex: 1; }
+  .doctype-name { font-weight: 500; }
+  .doctype-meta {
+    color: #5f6368; font-size: 11px; margin-top: 1px;
+    word-break: break-word;
+  }
+  .doctype-meta.warn { color: #b06000; }
+
+  .results .result {
+    padding: 6px 0; border-top: 1px solid #f1f3f4;
+    font-size: 12px;
+  }
+  .results .result:first-child { border-top: none; }
+  .results a { color: #1a73e8; text-decoration: none; margin-left: 6px; }
+  .results a:hover { text-decoration: underline; }
+
+  .folder-link {
+    display: inline-block; margin-top: 8px;
+    font-size: 12px; color: #1a73e8; text-decoration: none;
+  }
+  .folder-link:hover { text-decoration: underline; }
+
+  .muted { color: #80868b; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<h2 class="job" id="jobNumber">Loading…</h2>
+<div class="client" id="clientName"></div>
+
+<div class="row">
+  <select id="projectSelect"></select>
+  <button class="secondary" id="refreshBtn" title="Re-read this project's row">↻</button>
+</div>
+
+<div id="validation" class="status" style="display: none;"></div>
+
+<div class="section" id="docTypesSection" style="display: none;">
+  <div id="docTypes"></div>
+  <div style="margin-top: 10px;">
+    <button id="generateBtn" disabled>Generate Selected</button>
+  </div>
+</div>
+
+<div class="section results" id="resultsSection" style="display: none;">
+  <div style="font-weight: 500; margin-bottom: 4px;">Results</div>
+  <div id="results"></div>
+</div>
+
+<a id="folderLink" class="folder-link" target="_blank" style="display: none;">Open Project Folder ↗</a>
+
+<script>
+var state = {
+  projects: [],
+  selectedRow: 0,
+  validation: null,
+  generating: false
+};
+
+var jobNumberEl   = document.getElementById('jobNumber');
+var clientNameEl  = document.getElementById('clientName');
+var projectSelect = document.getElementById('projectSelect');
+var refreshBtn    = document.getElementById('refreshBtn');
+var validationEl  = document.getElementById('validation');
+var docTypesSec   = document.getElementById('docTypesSection');
+var docTypesEl    = document.getElementById('docTypes');
+var generateBtn   = document.getElementById('generateBtn');
+var resultsSec    = document.getElementById('resultsSection');
+var resultsEl     = document.getElementById('results');
+var folderLink    = document.getElementById('folderLink');
+
+google.script.run
+  .withSuccessHandler(function (ctx) {
+    state.projects = ctx.projects || [];
+    state.selectedRow = ctx.defaultRow || 0;
+    populateProjectDropdown();
+    if (ctx.validation) {
+      applyValidation(ctx.validation);
+    } else {
+      jobNumberEl.textContent = 'No projects found';
+      clientNameEl.textContent = 'Add a row with Project Number + Project Name';
+    }
+  })
+  .withFailureHandler(showFatal)
+  .getInitialContext();
+
+projectSelect.addEventListener('change', function () {
+  var row = Number(projectSelect.value);
+  if (!row) return;
+  state.selectedRow = row;
+  refreshValidation();
+});
+
+refreshBtn.addEventListener('click', refreshValidation);
+
+generateBtn.addEventListener('click', function () {
+  if (state.generating) return;
+  var checked = Array.prototype.slice.call(docTypesEl.querySelectorAll('input[type="checkbox"]'))
+    .filter(function (cb) { return cb.checked; })
+    .map(function (cb) { return cb.value; });
+  if (checked.length === 0) return;
+
+  state.generating = true;
+  generateBtn.disabled = true;
+  generateBtn.textContent = 'Generating…';
+  resultsSec.style.display = 'block';
+  resultsEl.innerHTML = '<div class="muted">Working — this can take 10–30 seconds per doc.</div>';
+
+  google.script.run
+    .withSuccessHandler(function (resp) {
+      state.generating = false;
+      generateBtn.textContent = 'Generate Selected';
+      renderResults(resp.results || []);
+      applyValidation(resp.validation);
+    })
+    .withFailureHandler(function (err) {
+      state.generating = false;
+      generateBtn.textContent = 'Generate Selected';
+      generateBtn.disabled = false;
+      resultsEl.innerHTML = '<div class="status error">' + escapeHtml(err.message || String(err)) + '</div>';
+    })
+    .generateSelected(state.selectedRow, checked);
+});
+
+function populateProjectDropdown() {
+  projectSelect.innerHTML = '';
+  if (state.projects.length === 0) {
+    var opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(no projects)';
+    projectSelect.appendChild(opt);
+    projectSelect.disabled = true;
+    return;
+  }
+  state.projects.forEach(function (p) {
+    var opt = document.createElement('option');
+    opt.value = String(p.rowIndex);
+    opt.textContent = p.jobNumber + ' — ' + p.clientName;
+    if (p.rowIndex === state.selectedRow) opt.selected = true;
+    projectSelect.appendChild(opt);
+  });
+}
+
+function refreshValidation() {
+  if (!state.selectedRow) return;
+  validationEl.style.display = 'block';
+  validationEl.className = 'status';
+  validationEl.textContent = 'Checking…';
+  generateBtn.disabled = true;
+  docTypesSec.style.display = 'none';
+  resultsSec.style.display = 'none';
+
+  google.script.run
+    .withSuccessHandler(applyValidation)
+    .withFailureHandler(showFatal)
+    .validateProject(state.selectedRow);
+}
+
+function applyValidation(v) {
+  state.validation = v;
+  jobNumberEl.textContent = v.jobNumber || '(no job number)';
+  clientNameEl.textContent = v.clientName || '';
+
+  if (v.folderUrl) {
+    folderLink.href = v.folderUrl;
+    folderLink.style.display = 'inline-block';
+  } else {
+    folderLink.style.display = 'none';
+  }
+
+  var problems = [];
+  if (v.invalidFolder) {
+    problems.push(v.folderUrl
+      ? 'Project Folder URL does not resolve to a Drive folder.'
+      : 'Project Folder column is blank.');
+  }
+  if (v.missingFields && v.missingFields.length) {
+    problems.push('Missing required fields:');
+  }
+
+  if (problems.length === 0) {
+    validationEl.className = 'status success';
+    validationEl.textContent = 'Ready to generate.';
+  } else {
+    var html = problems[0];
+    if (v.missingFields && v.missingFields.length) {
+      html += '<ul>';
+      v.missingFields.forEach(function (f) { html += '<li>' + escapeHtml(f) + '</li>'; });
+      html += '</ul>';
+    }
+    html += '<div style="margin-top: 6px;">Fix in sheet, then Refresh.</div>';
+    validationEl.className = 'status error';
+    validationEl.innerHTML = html;
+  }
+  validationEl.style.display = 'block';
+
+  renderDocTypes(v.docTypes || []);
+  docTypesSec.style.display = (v.docTypes && v.docTypes.length) ? 'block' : 'none';
+  generateBtn.disabled = !v.canGenerate;
+}
+
+function renderDocTypes(docTypes) {
+  docTypesEl.innerHTML = '';
+  docTypes.forEach(function (dt) {
+    var row = document.createElement('div');
+    row.className = 'doctype';
+
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = dt.name;
+    cb.checked = !dt.alreadyGenerated && dt.hasTemplate;
+    cb.disabled = !dt.hasTemplate;
+    cb.id = 'cb-' + cssId(dt.name);
+
+    var label = document.createElement('label');
+    label.className = 'doctype-label';
+    label.htmlFor = cb.id;
+
+    var nameDiv = document.createElement('div');
+    nameDiv.className = 'doctype-name';
+    nameDiv.textContent = dt.name;
+    label.appendChild(nameDiv);
+
+    var metaDiv = document.createElement('div');
+    metaDiv.className = 'doctype-meta';
+    if (!dt.hasTemplate) {
+      metaDiv.className = 'doctype-meta warn';
+      metaDiv.textContent = 'No template configured';
+    } else if (dt.alreadyGenerated) {
+      metaDiv.textContent = 'last generated: ' + dt.lastGeneratedAt +
+        (dt.lastGeneratedBy ? ' by ' + dt.lastGeneratedBy : '');
+    } else {
+      metaDiv.textContent = 'not yet generated';
+    }
+    label.appendChild(metaDiv);
+
+    row.appendChild(cb);
+    row.appendChild(label);
+    docTypesEl.appendChild(row);
+  });
+}
+
+function renderResults(results) {
+  resultsEl.innerHTML = '';
+  results.forEach(function (r) {
+    var div = document.createElement('div');
+    div.className = 'result';
+    if (r.ok) {
+      div.innerHTML = '✅ ' + escapeHtml(r.docType) +
+        ' <a target="_blank" href="' + escapeAttr(r.pdfUrl) + '">PDF</a>' +
+        ' <a target="_blank" href="' + escapeAttr(r.docUrl) + '">Doc</a>';
+    } else {
+      div.innerHTML = '❌ ' + escapeHtml(r.docType) + ' — <span style="color:#c5221f">' + escapeHtml(r.error || 'error') + '</span>';
+    }
+    resultsEl.appendChild(div);
+  });
+}
+
+function showFatal(err) {
+  validationEl.style.display = 'block';
+  validationEl.className = 'status error';
+  validationEl.textContent = err && err.message ? err.message : String(err);
+  docTypesSec.style.display = 'none';
+  resultsSec.style.display = 'none';
+}
+
+function cssId(s) {
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function escapeAttr(s) { return escapeHtml(s); }
+</script>
+
+</body>
+</html>
