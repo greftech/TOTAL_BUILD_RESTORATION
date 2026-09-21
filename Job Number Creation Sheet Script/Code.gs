@@ -359,13 +359,35 @@ function findProjectFolder(rootFolder, category, year, candidateNames) {
 // HELPERS
 // ============================================================
 
+/**
+ * Map trimmed header text to its 0-based column index.
+ * If a tab has the same header twice, the FIRST one wins. That matters: an
+ * archive tab can end up with a duplicate when the mover appends a column on
+ * the right and someone later adds the same column in its proper position.
+ * Last-wins would silently send every value to the stray column on the right.
+ */
 function buildHeaderIndex(headers) {
   var idx = {};
   for (var i = 0; i < headers.length; i++) {
     var name = String(headers[i]).trim();
-    if (name) idx[name] = i;
+    if (name && !Object.prototype.hasOwnProperty.call(idx, name)) idx[name] = i;
   }
   return idx;
+}
+
+/** Header names that appear more than once on a tab, in first-seen order. */
+function findDuplicateHeaders_(headers) {
+  var seen = {}, dupes = [];
+  for (var i = 0; i < headers.length; i++) {
+    var name = String(headers[i]).trim();
+    if (!name) continue;
+    if (Object.prototype.hasOwnProperty.call(seen, name)) {
+      if (dupes.indexOf(name) === -1) dupes.push(name);
+    } else {
+      seen[name] = true;
+    }
+  }
+  return dupes;
 }
 
 function extractDriveFolderId(url) {
@@ -395,7 +417,13 @@ function setStatus(sheet, row, headerIndex, message) {
  *
  * Columns are found by header name, never by position, so staff can add,
  * remove, or reorder columns on either tab without breaking the move. Any
- * source column the destination tab lacks is appended to its header row.
+ * source column the destination tab lacks is appended to its header row, and
+ * an alert says so, because an appended column lands on the far right and
+ * usually wants moving into place.
+ *
+ * If a tab carries the same header twice, the FIRST one wins and an alert names
+ * it. That happens when a column is appended on the right and someone later
+ * adds the same column in its proper position.
  *
  * Requires an installable "On edit" trigger pointed at onEditInstallable.
  */
@@ -491,11 +519,23 @@ function moveJob_(sheet, row, statusCol, statusValue, oldValue) {
     }
 
     const result = performMove_(sheet, row, statusValue);
-    let msg = 'Job moved to ' + route.label + ' ✅';
+    SpreadsheetApp.getActiveSpreadsheet().toast('Job moved to ' + route.label + ' ✅');
+
+    // Both notices below are alerts, not toasts. A toast fades and gets missed,
+    // and either of these means the archive tab's layout needs a human decision.
     if (result.addedColumns.length) {
-      msg += '  New columns added to that tab: ' + result.addedColumns.join(', ');
+      ui.alert('Job moved to ' + route.label + '.\n\n' +
+               'That tab did not have these columns, so they were added at the far RIGHT:\n  ' +
+               result.addedColumns.join('\n  ') + '\n\n' +
+               'If you want them somewhere else, move them now, before the next job is moved.');
     }
-    SpreadsheetApp.getActiveSpreadsheet().toast(msg);
+    if (result.duplicateHeaders.length) {
+      ui.alert('Duplicate columns on "' + route.sheet + '"\n\n' +
+               'This tab has more than one column named:\n  ' +
+               result.duplicateHeaders.join('\n  ') + '\n\n' +
+               'The job was moved, and those values went into the FIRST matching column. ' +
+               'Delete the extra copy on that tab, after moving any values out of it.');
+    }
   } catch (err) {
     ui.alert('Move failed. The job is still on "' + CFG.SOURCE_SHEET + '".\n\n' + err.message);
   } finally {
@@ -540,7 +580,10 @@ function readRowIdentity_(sheet, row) {
  * resolve to their results) plus number formats, then deletes the source row
  * LAST. Throws before any delete if something fails, so a failure can never
  * lose a row (at worst it leaves an un-moved original).
- * @return {{sheet: string, addedColumns: string[]}}
+ *
+ * Duplicate header names resolve to the FIRST occurrence on each tab, and the
+ * duplicates are reported back so the caller can warn.
+ * @return {{sheet: string, addedColumns: string[], duplicateHeaders: string[]}}
  */
 function performMove_(srcSheet, row, statusValue) {
   const route = CFG.ROUTES[statusValue];
@@ -560,11 +603,12 @@ function performMove_(srcSheet, row, statusValue) {
   const destHeaders = dest.getLastColumn() > 0
     ? dest.getRange(1, 1, 1, dest.getLastColumn()).getValues()[0]
     : [];
-  const destIndex = buildHeaderIndex(destHeaders);
+  const destIndex = buildHeaderIndex(destHeaders);      // first occurrence wins
+  const dupes = findDuplicateHeaders_(destHeaders);
   const added = [];
   for (let c = 0; c < srcHeaders.length; c++) {
     const name = String(srcHeaders[c]).trim();
-    if (!name || destIndex.hasOwnProperty(name)) continue;
+    if (!name || Object.prototype.hasOwnProperty.call(destIndex, name)) continue;
     destHeaders.push(name);
     destIndex[name] = destHeaders.length - 1;
     added.push(name);
@@ -578,11 +622,15 @@ function performMove_(srcSheet, row, statusValue) {
   }
 
   // 2) Build the destination row by header name; write frozen values + number formats.
+  //    A duplicate header on the SOURCE is read once, from its first column, so
+  //    the result never depends on left-to-right order.
   const outValues = new Array(width).fill('');
   const outFormats = new Array(width).fill('General');
+  const taken = {};
   for (let c = 0; c < srcHeaders.length; c++) {
     const name = String(srcHeaders[c]).trim();
-    if (!name) continue;
+    if (!name || Object.prototype.hasOwnProperty.call(taken, name)) continue;
+    taken[name] = true;
     outValues[destIndex[name]] = srcValues[c];
     outFormats[destIndex[name]] = srcFormats[c];
   }
@@ -596,5 +644,5 @@ function performMove_(srcSheet, row, statusValue) {
   // 3) Delete the source row LAST; rows below shift up.
   srcSheet.deleteRow(row);
 
-  return { sheet: route.sheet, addedColumns: added };
+  return { sheet: route.sheet, addedColumns: added, duplicateHeaders: dupes };
 }
