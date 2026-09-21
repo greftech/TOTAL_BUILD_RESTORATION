@@ -101,7 +101,7 @@ function onLeadFormSubmit(e) {
     "Estimated Cost": answers["Estimated Cost"] || "",
     "Job Completion Date": formatDateForSheet(answers["Job Completion Date"]),
     "Insurance": insurance,
-    "Claim number": answers["Claim Number"] || "",
+    "Claim Number": answers["Claim Number"] || "",
     "Date of Loss": formatDateForSheet(answers["Date of Loss"]),
     "Type of Loss": answers["Type of Loss"] || "",
     "Referral Name": answers["Referral Name"] || "",
