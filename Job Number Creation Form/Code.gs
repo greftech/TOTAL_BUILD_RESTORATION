@@ -174,7 +174,59 @@ function appendLeadRow(sheet, rowValues) {
   }
 
   sheet.appendRow(row);
+
+  var newRow = sheet.getLastRow();
+  inheritRowValidation(sheet, newRow);
   refreshBandingExtent(sheet);
+}
+
+/** Last column on the tab that actually has a header in row 1. 0 if there are none. */
+function lastHeaderColumn(sheet) {
+  var n = sheet.getLastColumn();
+  if (!n) return 0;
+  var headers = sheet.getRange(1, 1, 1, n).getValues()[0];
+  var last = 0;
+  for (var i = 0; i < headers.length; i++) {
+    if (String(headers[i]).trim()) last = i + 1;
+  }
+  return last;
+}
+
+/**
+ * Give the row we just appended the same dropdowns as the row above it, so the
+ * YES/NO picklist on "Create Job #?", and the Project Manager and Job Status
+ * lists, are there the moment a lead lands.
+ *
+ * Why copy instead of covering the column: data validation has no self-
+ * maintaining equivalent of alternating colours. Banding is a single range rule
+ * that re-flows when rows move; validation is a property of each individual
+ * cell. So the choice is either a dropdown on every blank row to the bottom of
+ * the sheet, or a new row inheriting them from its predecessor. This is the
+ * second. A row inserted by hand, or by the Job-Mover, already inherits from the
+ * row above; only an appended row does not, which is why this lives here.
+ *
+ * Copies the whole row rather than a named list of columns, so a dropdown added
+ * to some new column later is picked up with no code change.
+ *
+ * Wrapped in try/catch because a missing dropdown must never cost a lead.
+ */
+function inheritRowValidation(sheet, row) {
+  try {
+    if (row < 3) return;              // row 2 is the first data row; nothing above it to copy
+    var lastCol = lastHeaderColumn(sheet);
+    if (!lastCol) return;
+
+    var rules = sheet.getRange(row - 1, 1, 1, lastCol).getDataValidations();
+    var any = false;
+    for (var i = 0; i < rules[0].length; i++) {
+      if (rules[0][i]) { any = true; break; }
+    }
+    if (!any) return;                 // the row above has no dropdowns; nothing to inherit
+
+    sheet.getRange(row, 1, 1, lastCol).setDataValidations(rules);
+  } catch (err) {
+    Logger.log('Validation inherit skipped: ' + err);
+  }
 }
 
 /**
@@ -195,13 +247,7 @@ function refreshBandingExtent(sheet) {
     var bandings = sheet.getBandings();
     if (bandings.length !== 1) return;
 
-    var n = sheet.getLastColumn();
-    if (!n) return;
-    var headers = sheet.getRange(1, 1, 1, n).getValues()[0];
-    var lastCol = 0;
-    for (var i = 0; i < headers.length; i++) {
-      if (String(headers[i]).trim()) lastCol = i + 1;
-    }
+    var lastCol = lastHeaderColumn(sheet);
     var lastRow = sheet.getLastRow();
     if (lastCol < 2 || lastRow < 2) return;   // striping runs from B2; col A keeps its own fill
 
