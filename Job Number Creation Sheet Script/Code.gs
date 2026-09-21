@@ -1,4 +1,3 @@
-
 // ============================================================
 // TBR JOB NUMBER TRIGGER — SELF-CONTAINED TEST BUNDLE
 // ============================================================
@@ -385,4 +384,129 @@ function setStatus(sheet, row, headerIndex, message) {
     return;
   }
   sheet.getRange(row, col + 1).setValue(message);
+}
+
+/**
+ * TBR Job-Mover
+ * -------------
+ * When Job Status (column H) on the "TBR Job Numbers" sheet is set to
+ * "Complete" or "JNS (Job Not Sold)", ask for confirmation and move the whole
+ * job row (columns A–V) to the matching sheet, freezing calculated values.
+ *
+ * Setup: paste this into Extensions > Apps Script, Save, reload the sheet,
+ * then use the "⚙️ TBR Tools > Install job-mover" menu once. See INSTALL.md.
+ */
+
+const CFG = {
+  SOURCE_SHEET: 'TBR Job Numbers',
+  STATUS_COL: 8,            // column H
+  FIRST_DATA_ROW: 2,       // row 1 is the header
+  LAST_DATA_COL: 22,       // column V — last real data column
+  PROJECT_NUM_COL: 2,      // column B — used for the empty-row guard
+  ROUTES: {
+    'Complete': { sheet: 'TBR - Completed', label: 'TBR – Completed' },
+    'JNS (Job Not Sold)': { sheet: 'TBR - JNS', label: 'TBR – JNS' }
+  }
+};
+
+/**
+ * Installable onEdit handler. Runs on every edit; exits fast unless the edit is
+ * a Job Status change (column H, row >= 2) on the source sheet whose new value
+ * maps to a route (Complete / JNS). Anything else is ignored.
+ */
+function onEditInstallable(e) {
+  if (!e || !e.range) return;
+  const sheet = e.range.getSheet();
+  if (sheet.getName() !== CFG.SOURCE_SHEET) return;
+  if (e.range.getColumn() !== CFG.STATUS_COL) return;
+  const row = e.range.getRow();
+  if (row < CFG.FIRST_DATA_ROW) return;
+
+  const newValue = e.value;                        // selected string, or undefined if cleared
+  if (!newValue || !CFG.ROUTES[newValue]) return;  // not Complete/JNS → do nothing
+
+  moveJob_(sheet, row, newValue, e.oldValue);
+}
+
+/* ------------------------------------------------------------------ */
+/* UI wrapper: confirm, guard, revert                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Ask before moving. Guards empty rows, reverts the dropdown on "No", and
+ * reports errors without ever deleting a row.
+ * @param {Sheet}  sheet       the source sheet
+ * @param {number} row         1-based row that was edited
+ * @param {string} statusValue "Complete" or "JNS (Job Not Sold)"
+ * @param {*}      oldValue    the previous Job Status value (for revert)
+ */
+function moveJob_(sheet, row, statusValue, oldValue) {
+  const route = CFG.ROUTES[statusValue];
+  const ui = SpreadsheetApp.getUi();
+  const statusCell = sheet.getRange(row, CFG.STATUS_COL);
+
+
+
+  const answer = ui.alert(
+    'Move this job?',
+    'Move this job to ' + route.label + '?\n\nThis removes it from "' +
+      CFG.SOURCE_SHEET + '".',
+    ui.ButtonSet.YES_NO
+  );
+  if (answer !== ui.Button.YES) {
+    revertStatus_(statusCell, oldValue);
+    return;
+  }
+
+  try {
+    performMove_(sheet, row, statusValue);
+    SpreadsheetApp.getActiveSpreadsheet().toast('Job moved to ' + route.label + ' ✅');
+  } catch (err) {
+    ui.alert('Move failed — nothing was changed.\n\n' + err.message);
+  }
+}
+
+/** Restore the Job Status cell to its previous value (clear it if there was none). */
+function revertStatus_(statusCell, oldValue) {
+  if (oldValue === undefined || oldValue === null) {
+    statusCell.clearContent();
+  } else {
+    statusCell.setValue(oldValue);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Core move (UI-free, called by the wrapper and the self-test)        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Move columns A–V of `row` on srcSheet to the destination mapped by statusValue.
+ * Copies formatting, writes FROZEN computed values (no live formulas), then
+ * deletes the source row LAST. Throws before any delete if something fails, so a
+ * failure can never lose a row (at worst it leaves an un-moved original).
+ * @return {string} the destination sheet name
+ */
+function performMove_(srcSheet, row, statusValue) {
+  const route = CFG.ROUTES[statusValue];
+  if (!route) throw new Error('No route for status: ' + statusValue);
+
+  const ss = srcSheet.getParent();
+  const dest = ss.getSheetByName(route.sheet);
+  if (!dest) throw new Error('Destination sheet not found: ' + route.sheet);
+
+  const nCols = CFG.LAST_DATA_COL;
+  const srcRange = srcSheet.getRange(row, 1, 1, nCols);
+  const destRow = dest.getLastRow() + 1;
+  const destRange = dest.getRange(destRow, 1, 1, nCols);
+
+  // 1) Copy formatting only, so the archived row looks identical (currency, %, dates).
+  srcRange.copyTo(destRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+  // 2) Write frozen values — getValues() resolves formulas to their results.
+  destRange.setValues(srcRange.getValues());
+  SpreadsheetApp.flush(); // commit the destination write before deleting the source
+
+  // 3) Delete the source row LAST; rows below shift up.
+  srcSheet.deleteRow(row);
+
+  return route.sheet;
 }
