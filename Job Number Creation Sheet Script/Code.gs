@@ -361,10 +361,8 @@ function findProjectFolder(rootFolder, category, year, candidateNames) {
 
 /**
  * Map trimmed header text to its 0-based column index.
- * If a tab has the same header twice, the FIRST one wins. That matters: an
- * archive tab can end up with a duplicate when the mover appends a column on
- * the right and someone later adds the same column in its proper position.
- * Last-wins would silently send every value to the stray column on the right.
+ * If a tab has the same header twice, the FIRST one wins, so a stray duplicate
+ * column on the right can never hijack lookups from the real column.
  */
 function buildHeaderIndex(headers) {
   var idx = {};
@@ -375,19 +373,15 @@ function buildHeaderIndex(headers) {
   return idx;
 }
 
-/** Header names that appear more than once on a tab, in first-seen order. */
-function findDuplicateHeaders_(headers) {
-  var seen = {}, dupes = [];
-  for (var i = 0; i < headers.length; i++) {
-    var name = String(headers[i]).trim();
-    if (!name) continue;
-    if (Object.prototype.hasOwnProperty.call(seen, name)) {
-      if (dupes.indexOf(name) === -1) dupes.push(name);
-    } else {
-      seen[name] = true;
-    }
+/** 1-based column number to its A1 letter. 1 -> A, 22 -> V, 27 -> AA. */
+function columnLetter_(n) {
+  var s = '';
+  while (n > 0) {
+    var r = (n - 1) % 26;
+    s = String.fromCharCode(65 + r) + s;
+    n = (n - r - 1) / 26;
   }
-  return dupes;
+  return s;
 }
 
 function extractDriveFolderId(url) {
@@ -415,15 +409,22 @@ function setStatus(sheet, row, headerIndex, message) {
  * "Complete" or "JNS (Job Not Sold)", ask for confirmation and move the whole
  * job row to the matching sheet, freezing calculated values.
  *
- * Columns are found by header name, never by position, so staff can add,
- * remove, or reorder columns on either tab without breaking the move. Any
- * source column the destination tab lacks is appended to its header row, and
- * an alert says so, because an appended column lands on the far right and
- * usually wants moving into place.
+ * THE RULE: an archive tab's header row must be identical to the main tab's,
+ * same names in the same order. The whole row is then copied straight across,
+ * position for position.
  *
- * If a tab carries the same header twice, the FIRST one wins and an alert names
- * it. That happens when a column is appended on the right and someone later
- * adds the same column in its proper position.
+ * The code checks that rule before every move and REFUSES the move if it is
+ * broken, naming the first columns that disagree. Nothing is copied and nothing
+ * is deleted; the status cell is put back the way it was. Whoever added a
+ * column to the main tab adds it to the archive tabs in the same position, then
+ * sets the status again. It never rewrites an archive tab's headers on its own.
+ *
+ * This is deliberate. Copying by position without checking is what silently
+ * misfiles data: insert one column on the main tab, forget the archive, and
+ * every value after that point lands one column off with no error at all.
+ *
+ * Only the status column is located by header text rather than position, so
+ * that adding a column never stops the trigger from firing.
  *
  * Requires an installable "On edit" trigger pointed at onEditInstallable.
  */
@@ -490,6 +491,24 @@ function moveJob_(sheet, row, statusCol, statusValue, oldValue) {
     return;
   }
 
+  const dest = sheet.getParent().getSheetByName(route.sheet);
+  if (!dest) {
+    revertStatus_(statusCell, oldValue);
+    ui.alert('The tab "' + route.sheet + '" was not found, so nothing was moved.');
+    return;
+  }
+
+  // Header guard, checked BEFORE asking, so nobody confirms a move that then fails.
+  // performMove_ checks again for itself; this one exists only for the better message.
+  const check = compareHeaders_(sheet, dest);
+  if (check.problems.length) {
+    revertStatus_(statusCell, oldValue);
+    ui.alert('Columns do not match. Job not moved.',
+             headerMismatchMessage_(route.sheet, check.problems),
+             ui.ButtonSet.OK);
+    return;
+  }
+
   const answer = ui.alert(
     'Move this job?',
     'Move "' + before.name + '" to ' + route.label + '?\n\nThis removes it from "' +
@@ -518,24 +537,8 @@ function moveJob_(sheet, row, statusCol, statusValue, oldValue) {
       return;
     }
 
-    const result = performMove_(sheet, row, statusValue);
+    performMove_(sheet, row, statusValue);
     SpreadsheetApp.getActiveSpreadsheet().toast('Job moved to ' + route.label + ' ✅');
-
-    // Both notices below are alerts, not toasts. A toast fades and gets missed,
-    // and either of these means the archive tab's layout needs a human decision.
-    if (result.addedColumns.length) {
-      ui.alert('Job moved to ' + route.label + '.\n\n' +
-               'That tab did not have these columns, so they were added at the far RIGHT:\n  ' +
-               result.addedColumns.join('\n  ') + '\n\n' +
-               'If you want them somewhere else, move them now, before the next job is moved.');
-    }
-    if (result.duplicateHeaders.length) {
-      ui.alert('Duplicate columns on "' + route.sheet + '"\n\n' +
-               'This tab has more than one column named:\n  ' +
-               result.duplicateHeaders.join('\n  ') + '\n\n' +
-               'The job was moved, and those values went into the FIRST matching column. ' +
-               'Delete the extra copy on that tab, after moving any values out of it.');
-    }
   } catch (err) {
     ui.alert('Move failed. The job is still on "' + CFG.SOURCE_SHEET + '".\n\n' + err.message);
   } finally {
@@ -573,17 +576,69 @@ function readRowIdentity_(sheet, row) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Move `row` on srcSheet to the destination mapped by statusValue.
- * Each value lands in the destination column with the same header name, so the
- * two tabs may differ in column order or count; source headers the destination
- * lacks are appended to its header row first. Writes FROZEN values (formulas
- * resolve to their results) plus number formats, then deletes the source row
- * LAST. Throws before any delete if something fails, so a failure can never
- * lose a row (at worst it leaves an un-moved original).
+ * Compare the source header row to an archive tab's header row, position by
+ * position, up to the last NAMED column on the source. Anything past that
+ * (trailing blank headers on either tab, extra archive columns) is ignored.
+ * Comparison is on trimmed text and is case-sensitive.
+ * @return {{width: number, problems: string[]}} width is the number of columns a
+ *         move would copy; problems is empty when the tabs line up.
+ */
+function compareHeaders_(srcSheet, destSheet) {
+  const srcLast = srcSheet.getLastColumn();
+  const srcHeaders = srcLast ? srcSheet.getRange(1, 1, 1, srcLast).getValues()[0] : [];
+
+  let width = 0;
+  for (let i = 0; i < srcHeaders.length; i++) {
+    if (String(srcHeaders[i]).trim()) width = i + 1;
+  }
+  if (!width) throw new Error('"' + srcSheet.getName() + '" has no column headers in row 1.');
+
+  const destLast = destSheet.getLastColumn();
+  const destHeaders = destLast ? destSheet.getRange(1, 1, 1, destLast).getValues()[0] : [];
+
+  const problems = [];
+  for (let i = 0; i < width; i++) {
+    const want = String(srcHeaders[i]).trim();
+    const got = String(destHeaders[i] === undefined ? '' : destHeaders[i]).trim();
+    if (got === want) continue;
+    problems.push('Column ' + columnLetter_(i + 1) + ': this tab says ' +
+                  (got ? '"' + got + '"' : '(blank)') + ', expected "' + want + '"');
+  }
+  return { width: width, problems: problems };
+}
+
+/**
+ * Wording for a refused move. Only the first few disagreements are listed: one
+ * inserted column shifts everything after it, and the first line is the one that
+ * tells you where to look.
+ */
+function headerMismatchMessage_(destName, problems) {
+  const SHOW = 4;
+  let body = problems.slice(0, SHOW).join('\n');
+  if (problems.length > SHOW) {
+    body += '\n...and ' + (problems.length - SHOW) + ' more column(s) after that.';
+  }
+  return 'The columns on "' + destName + '" no longer match "' + CFG.SOURCE_SHEET + '":\n\n' +
+         body + '\n\n' +
+         'Nothing was moved and nothing was deleted.\n\n' +
+         'Fix the header row on "' + destName + '" so it is identical to "' + CFG.SOURCE_SHEET +
+         '", same names in the same order, then set Job Status again.';
+}
+
+/* ------------------------------------------------------------------ */
+/* Core move (UI-free, called by the wrapper)                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Move `row` on srcSheet to the archive tab mapped by statusValue.
  *
- * Duplicate header names resolve to the FIRST occurrence on each tab, and the
- * duplicates are reported back so the caller can warn.
- * @return {{sheet: string, addedColumns: string[], duplicateHeaders: string[]}}
+ * Refuses outright unless the two header rows are identical, so a row can never
+ * be filed one column off. Then copies the whole row straight across by
+ * position: formatting first, then FROZEN values (formulas resolve to their
+ * results), and deletes the source row LAST. Every failure path throws before
+ * the delete, so a failure can never lose a row; at worst it leaves the
+ * original un-moved.
+ * @return {{sheet: string, width: number}}
  */
 function performMove_(srcSheet, row, statusValue) {
   const route = CFG.ROUTES[statusValue];
@@ -593,56 +648,26 @@ function performMove_(srcSheet, row, statusValue) {
   const dest = ss.getSheetByName(route.sheet);
   if (!dest) throw new Error('Destination sheet not found: ' + route.sheet);
 
-  const srcCols = srcSheet.getLastColumn();
-  const srcHeaders = srcSheet.getRange(1, 1, 1, srcCols).getValues()[0];
-  const srcRange = srcSheet.getRange(row, 1, 1, srcCols);
-  const srcValues = srcRange.getValues()[0];
-  const srcFormats = srcRange.getNumberFormats()[0];
+  // Authoritative check. moveJob_ already ran this for a friendlier message, but
+  // performMove_ must never write a misaligned row even if called some other way.
+  const check = compareHeaders_(srcSheet, dest);
+  if (check.problems.length) throw new Error(headerMismatchMessage_(route.sheet, check.problems));
 
-  // 1) Map destination headers; append any source header the destination lacks.
-  const destHeaders = dest.getLastColumn() > 0
-    ? dest.getRange(1, 1, 1, dest.getLastColumn()).getValues()[0]
-    : [];
-  const destIndex = buildHeaderIndex(destHeaders);      // first occurrence wins
-  const dupes = findDuplicateHeaders_(destHeaders);
-  const added = [];
-  for (let c = 0; c < srcHeaders.length; c++) {
-    const name = String(srcHeaders[c]).trim();
-    if (!name || Object.prototype.hasOwnProperty.call(destIndex, name)) continue;
-    destHeaders.push(name);
-    destIndex[name] = destHeaders.length - 1;
-    added.push(name);
-  }
-  const width = destHeaders.length;
-  if (dest.getMaxColumns() < width) {
-    dest.insertColumnsAfter(dest.getMaxColumns(), width - dest.getMaxColumns());
-  }
-  if (added.length) {
-    dest.getRange(1, 1, 1, width).setValues([destHeaders]);
-  }
+  const width = check.width;
+  const srcRange = srcSheet.getRange(row, 1, 1, width);
 
-  // 2) Build the destination row by header name; write frozen values + number formats.
-  //    A duplicate header on the SOURCE is read once, from its first column, so
-  //    the result never depends on left-to-right order.
-  const outValues = new Array(width).fill('');
-  const outFormats = new Array(width).fill('General');
-  const taken = {};
-  for (let c = 0; c < srcHeaders.length; c++) {
-    const name = String(srcHeaders[c]).trim();
-    if (!name || Object.prototype.hasOwnProperty.call(taken, name)) continue;
-    taken[name] = true;
-    outValues[destIndex[name]] = srcValues[c];
-    outFormats[destIndex[name]] = srcFormats[c];
-  }
   const destRow = dest.getLastRow() + 1;
   if (dest.getMaxRows() < destRow) dest.insertRowsAfter(dest.getMaxRows(), 1);
   const destRange = dest.getRange(destRow, 1, 1, width);
-  destRange.setNumberFormats([outFormats]);
-  destRange.setValues([outValues]);
+
+  // 1) Formatting, so the archived row looks identical (currency, dates, fills).
+  srcRange.copyTo(destRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+  // 2) Frozen values: getValues() resolves formulas to their results.
+  destRange.setValues(srcRange.getValues());
   SpreadsheetApp.flush(); // commit the destination write before deleting the source
 
   // 3) Delete the source row LAST; rows below shift up.
   srcSheet.deleteRow(row);
 
-  return { sheet: route.sheet, addedColumns: added, duplicateHeaders: dupes };
+  return { sheet: route.sheet, width: width };
 }
