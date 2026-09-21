@@ -194,8 +194,48 @@ function appendLeadRow(sheet, rowValues) {
   sheet.appendRow(row);
 
   var newRow = sheet.getLastRow();
-  inheritRowValidation(sheet, newRow);
+  inheritRowFormat(sheet, newRow);       // borders, fonts, currency formats
+  inheritRowValidation(sheet, newRow);   // after the format copy, never before
   refreshBandingExtent(sheet);
+}
+
+/**
+ * Give the row we just appended the same formatting as the row above it:
+ * gridlines and borders, fonts, alignment, and the currency and date number
+ * formats on the money and date columns.
+ *
+ * appendRow adds a completely bare row. Row striping still looks right on it,
+ * because that is native banding and banding is a range rule, but borders and
+ * number formats are per-cell and there is nothing to inherit them from. A row
+ * inserted by hand, or by the Job-Mover, does inherit all of this natively;
+ * again it is only an append that arrives bare.
+ *
+ * PASTE_FORMAT copies formatting only and leaves the values we just wrote alone.
+ * It runs BEFORE inheritRowValidation so that, if a future Sheets change ever
+ * made it disturb validation, the validation copy would still have the last word.
+ *
+ * One caveat: this also copies column A's green/red fill down from the row
+ * above, and that fill is painted by hand rather than driven by the YES/NO
+ * value. If the row above says YES and the new lead says NO, the colour will be
+ * inherited wrongly until somebody fixes it. Converting column A to a real
+ * conditional-formatting rule would make that impossible; see the design spec.
+ *
+ * Wrapped in try/catch because cosmetics must never cost a lead.
+ */
+function inheritRowFormat(sheet, row) {
+  try {
+    if (row < 3) return;              // row 2 is the first data row; nothing above it to copy
+    var lastCol = lastHeaderColumn(sheet);
+    if (!lastCol) return;
+
+    sheet.getRange(row - 1, 1, 1, lastCol).copyTo(
+      sheet.getRange(row, 1, 1, lastCol),
+      SpreadsheetApp.CopyPasteType.PASTE_FORMAT,
+      false
+    );
+  } catch (err) {
+    Logger.log('Format inherit skipped: ' + err);
+  }
 }
 
 /** Last column on the tab that actually has a header in row 1. 0 if there are none. */

@@ -136,3 +136,34 @@ mover tests. Cases: insert lands above the totals row and pushes it down; totals
 formulas span exactly the data rows; a tab with no totals row still appends at
 the end; the banding range is resized to the data extent; a tab with no banding
 is left alone without throwing; the header guard still refuses a mismatched tab.
+
+## Addendum: what an appended row inherits
+
+Added after Joe reported that a form-appended row picked up the stripe but no
+gridlines.
+
+`appendRow` adds a completely bare row. Native banding still looks right on it,
+because banding is a range rule rather than a cell property, but everything that
+*is* a cell property arrives empty. Two helpers in the form script fill that gap,
+both running after the row is safely written and both wrapped in try/catch:
+
+| Helper | Copies from the row above | Why it is needed |
+| --- | --- | --- |
+| `inheritRowFormat` | borders and gridlines, fonts, alignment, currency and date number formats | `PASTE_FORMAT`. Runs first. |
+| `inheritRowValidation` | the YES/NO, Project Manager and Job Status dropdowns | Runs second, so it always has the last word. |
+
+A row inserted by hand, or by the Job-Mover above the totals row, inherits all of
+this natively. Only an append does not.
+
+## Open item: column A's flag colour
+
+Column A's green/red fill is painted by hand, not driven by the YES/NO value.
+`inheritRowFormat` copies it down with the rest of the formatting, so when the
+row above says YES and the new lead says NO, the new row inherits the wrong
+colour until somebody notices.
+
+The fix is to replace the painted fill with a conditional-formatting rule keyed
+on the cell value. That would make a wrong colour impossible, survive every
+insert and delete for free, and remove the only caveat on inheriting formatting.
+Joe chose to keep the painted fill for now; this is here so the trade-off is not
+forgotten.
