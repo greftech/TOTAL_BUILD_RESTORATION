@@ -442,6 +442,33 @@ const CFG = {
 };
 
 /**
+ * Row striping. The stripes themselves are Sheets' native alternating colours,
+ * set up BY HAND once per tab, because Sheets re-flows them on every insert and
+ * delete while painted-on fills cannot. This script never creates that banding.
+ * All it does is keep the banded RANGE covering exactly the rows that hold data,
+ * so a row added at the bottom falls inside it and a deleted one does not.
+ *
+ * Striping starts at column B. Column A carries a green/red YES-NO fill, and a
+ * painted fill always covers banding, so column A cannot show a stripe without
+ * losing its colour.
+ */
+const STRIPE = {
+  FIRST_COL: 2,   // column B
+  FIRST_ROW: 2    // row 1 is the header and is never striped
+};
+
+/**
+ * Totals row. Created BY HAND, found by its label in column A so that a stray
+ * note below it cannot break the insert position. On a tab that has one, a moved
+ * job is inserted ABOVE it; on a tab that does not, the job is appended at the
+ * end exactly as before.
+ */
+const TOTALS = {
+  LABEL: 'TOTAL',
+  SUM_HEADERS: ['Contract Value', 'Estimated Cost', 'Actual Cost']
+};
+
+/**
  * Installable onEdit handler. Runs on every edit; exits fast unless the edit is
  * a single-cell change on the source sheet, in the column whose header is
  * CFG.STATUS_HEADER, to a value that maps to a route. Anything else is ignored.
@@ -463,6 +490,26 @@ function onEditInstallable(e) {
   if (!newValue || !Object.prototype.hasOwnProperty.call(CFG.ROUTES, newValue)) return;
 
   moveJob_(sheet, row, col, newValue, e.oldValue);
+}
+
+/**
+ * Installable "On change" trigger. Keeps the striped range in step when somebody
+ * inserts or deletes rows by hand. Install it once from the Triggers page,
+ * alongside the existing On edit trigger.
+ */
+function onChangeInstallable(e) {
+  if (!e || (e.changeType !== 'INSERT_ROW' && e.changeType !== 'REMOVE_ROW')) return;
+  refreshAllBandingExtents_(SpreadsheetApp.getActive());
+}
+
+/** Refresh the striped range on the main tab and on every archive tab. */
+function refreshAllBandingExtents_(ss) {
+  const names = [CFG.SOURCE_SHEET];
+  for (const key in CFG.ROUTES) names.push(CFG.ROUTES[key].sheet);
+  for (let i = 0; i < names.length; i++) {
+    const sh = ss.getSheetByName(names[i]);
+    if (sh) refreshBandingExtent_(sh);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -572,7 +619,7 @@ function readRowIdentity_(sheet, row) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Core move (UI-free, called by the wrapper)                          */
+/* Header guard                                                        */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -626,6 +673,94 @@ function headerMismatchMessage_(destName, problems) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Row striping and the totals row                                     */
+/* ------------------------------------------------------------------ */
+
+/** Last column on a tab that actually has a header in row 1. 0 if there are none. */
+function lastHeaderColumn_(sheet) {
+  const n = sheet.getLastColumn();
+  if (!n) return 0;
+  const headers = sheet.getRange(1, 1, 1, n).getValues()[0];
+  let last = 0;
+  for (let i = 0; i < headers.length; i++) {
+    if (String(headers[i]).trim()) last = i + 1;
+  }
+  return last;
+}
+
+/**
+ * Stretch or shrink this tab's existing alternating-colours banding so it covers
+ * exactly the data rows. Idempotent, and a no-op when the range is already right.
+ *
+ * Deliberately does NOT create banding. Setting that up is a one-time manual job,
+ * so a tab without it is reported in the log and otherwise left alone.
+ * @return {boolean} true when the range was actually changed.
+ */
+function refreshBandingExtent_(sheet) {
+  const bandings = sheet.getBandings();
+  if (bandings.length !== 1) {
+    Logger.log('Striping: "' + sheet.getName() + '" has ' + bandings.length +
+               ' banding range(s), expected exactly 1. Left alone. Apply ' +
+               'Format > Alternating colours to that tab by hand.');
+    return false;
+  }
+
+  const lastCol = lastHeaderColumn_(sheet);
+  const lastRow = sheet.getLastRow();
+  if (lastCol < STRIPE.FIRST_COL || lastRow < STRIPE.FIRST_ROW) return false;
+
+  const want = sheet.getRange(STRIPE.FIRST_ROW, STRIPE.FIRST_COL,
+                              lastRow - STRIPE.FIRST_ROW + 1,
+                              lastCol - STRIPE.FIRST_COL + 1);
+  if (bandings[0].getRange().getA1Notation() === want.getA1Notation()) return false;
+  bandings[0].setRange(want);
+  return true;
+}
+
+/**
+ * Row number of this tab's totals row, or 0 when it has none. Scans column A
+ * upward from the bottom, since that is where the totals row lives.
+ */
+function findTotalsRow_(sheet) {
+  const last = sheet.getLastRow();
+  if (last < 2) return 0;
+  const colA = sheet.getRange(2, 1, last - 1, 1).getValues();
+  for (let i = colA.length - 1; i >= 0; i--) {
+    if (String(colA[i][0]).trim().toUpperCase() === TOTALS.LABEL) return i + 2;
+  }
+  return 0;
+}
+
+/**
+ * Rewrite the totals row's sums so they span exactly row 2 to the row above it.
+ *
+ * This is necessary, not cosmetic. A hand-written =SUM(J2:J9) does NOT grow when
+ * a row is inserted at row 10, so without this the newest job would be left out
+ * of the total. Rewriting the bounds every time makes that drift impossible.
+ */
+function updateTotals_(sheet, totalsRow) {
+  const lastCol = sheet.getLastColumn();
+  if (!lastCol) return;
+  const idx = buildHeaderIndex(sheet.getRange(1, 1, 1, lastCol).getValues()[0]);
+  const lastDataRow = totalsRow - 1;
+
+  for (let i = 0; i < TOTALS.SUM_HEADERS.length; i++) {
+    const name = TOTALS.SUM_HEADERS[i];
+    if (idx[name] === undefined) {
+      Logger.log('Totals: no "' + name + '" column on "' + sheet.getName() + '"; skipped.');
+      continue;
+    }
+    const cell = sheet.getRange(totalsRow, idx[name] + 1);
+    if (lastDataRow < 2) {
+      cell.setValue(0);
+    } else {
+      const letter = columnLetter_(idx[name] + 1);
+      cell.setFormula('=SUM(' + letter + '2:' + letter + lastDataRow + ')');
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Core move (UI-free, called by the wrapper)                          */
 /* ------------------------------------------------------------------ */
 
@@ -656,8 +791,17 @@ function performMove_(srcSheet, row, statusValue) {
   const width = check.width;
   const srcRange = srcSheet.getRange(row, 1, 1, width);
 
-  const destRow = dest.getLastRow() + 1;
-  if (dest.getMaxRows() < destRow) dest.insertRowsAfter(dest.getMaxRows(), 1);
+  // Where does the job land? Above the totals row on a tab that has one, so the
+  // totals stay at the bottom. Otherwise straight onto the end, as before.
+  const totalsRow = findTotalsRow_(dest);
+  let destRow;
+  if (totalsRow) {
+    dest.insertRowBefore(totalsRow);   // totals shifts down to totalsRow + 1
+    destRow = totalsRow;
+  } else {
+    destRow = dest.getLastRow() + 1;
+    if (dest.getMaxRows() < destRow) dest.insertRowsAfter(dest.getMaxRows(), 1);
+  }
   const destRange = dest.getRange(destRow, 1, 1, width);
 
   // 1) Formatting, so the archived row looks identical (currency, dates, fills).
@@ -669,5 +813,16 @@ function performMove_(srcSheet, row, statusValue) {
   // 3) Delete the source row LAST; rows below shift up.
   srcSheet.deleteRow(row);
 
-  return { sheet: route.sheet, width: width };
+  // 4) Housekeeping, all of it after the delete because none of it can lose a
+  //    row. The totals row sits one lower now that a job was inserted above it.
+  if (totalsRow) updateTotals_(dest, totalsRow + 1);
+  refreshBandingExtent_(dest);
+  refreshBandingExtent_(srcSheet);
+
+  return {
+    sheet: route.sheet,
+    width: width,
+    row: destRow,
+    totalsRow: totalsRow ? totalsRow + 1 : 0
+  };
 }

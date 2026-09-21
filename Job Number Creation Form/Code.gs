@@ -174,6 +174,44 @@ function appendLeadRow(sheet, rowValues) {
   }
 
   sheet.appendRow(row);
+  refreshBandingExtent(sheet);
+}
+
+/**
+ * Keep the tracking tab's alternating-colours banding covering the row we just
+ * appended, so a lead added by this form is striped like every other row.
+ *
+ * Duplicated from the TBR Job Numbers sheet-bound script on purpose. This runs in
+ * a different Apps Script project, and an Apps Script change does not reliably
+ * fire another project's triggers, so that script's own refresh may never run for
+ * a form submission. generateProjectNumber is duplicated across these two files
+ * the same way.
+ *
+ * Never creates banding; setting that up is a one-time manual job per tab.
+ * Wrapped in try/catch because a cosmetic problem must never cost a lead.
+ */
+function refreshBandingExtent(sheet) {
+  try {
+    var bandings = sheet.getBandings();
+    if (bandings.length !== 1) return;
+
+    var n = sheet.getLastColumn();
+    if (!n) return;
+    var headers = sheet.getRange(1, 1, 1, n).getValues()[0];
+    var lastCol = 0;
+    for (var i = 0; i < headers.length; i++) {
+      if (String(headers[i]).trim()) lastCol = i + 1;
+    }
+    var lastRow = sheet.getLastRow();
+    if (lastCol < 2 || lastRow < 2) return;   // striping runs from B2; col A keeps its own fill
+
+    var want = sheet.getRange(2, 2, lastRow - 1, lastCol - 1);
+    if (bandings[0].getRange().getA1Notation() !== want.getA1Notation()) {
+      bandings[0].setRange(want);
+    }
+  } catch (err) {
+    Logger.log('Banding refresh skipped: ' + err);
+  }
 }
 
 
