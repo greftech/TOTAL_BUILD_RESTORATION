@@ -389,20 +389,23 @@ function setStatus(sheet, row, headerIndex, message) {
 /**
  * TBR Job-Mover
  * -------------
- * When Job Status (column H) on the "TBR Job Numbers" sheet is set to
+ * When the Job Status cell on the "TBR Job Numbers" sheet is set to
  * "Complete" or "JNS (Job Not Sold)", ask for confirmation and move the whole
- * job row (columns A–V) to the matching sheet, freezing calculated values.
+ * job row to the matching sheet, freezing calculated values.
  *
- * Setup: paste this into Extensions > Apps Script, Save, reload the sheet,
- * then use the "⚙️ TBR Tools > Install job-mover" menu once. See INSTALL.md.
+ * Columns are found by header name, never by position, so staff can add,
+ * remove, or reorder columns on either tab without breaking the move. Any
+ * source column the destination tab lacks is appended to its header row.
+ *
+ * Requires an installable "On edit" trigger pointed at onEditInstallable.
  */
 
 const CFG = {
   SOURCE_SHEET: 'TBR Job Numbers',
-  STATUS_COL: 8,            // column H
-  FIRST_DATA_ROW: 2,       // row 1 is the header
-  LAST_DATA_COL: 22,       // column V — last real data column
-  PROJECT_NUM_COL: 2,      // column B — used for the empty-row guard
+  STATUS_HEADER: 'Job Status',      // header text of the status column (trimmed, exact match)
+  NAME_HEADER: 'Project Name',      // a row with this blank is not a job and is never moved
+  NUMBER_HEADER: 'Project Number',  // used only to re-check row identity after the dialog
+  FIRST_DATA_ROW: 2,                // row 1 is the header
   ROUTES: {
     'Complete': { sheet: 'TBR - Completed', label: 'TBR – Completed' },
     'JNS (Job Not Sold)': { sheet: 'TBR - JNS', label: 'TBR – JNS' }
@@ -411,21 +414,26 @@ const CFG = {
 
 /**
  * Installable onEdit handler. Runs on every edit; exits fast unless the edit is
- * a Job Status change (column H, row >= 2) on the source sheet whose new value
- * maps to a route (Complete / JNS). Anything else is ignored.
+ * a single-cell change on the source sheet, in the column whose header is
+ * CFG.STATUS_HEADER, to a value that maps to a route. Anything else is ignored.
  */
 function onEditInstallable(e) {
   if (!e || !e.range) return;
   const sheet = e.range.getSheet();
   if (sheet.getName() !== CFG.SOURCE_SHEET) return;
-  if (e.range.getColumn() !== CFG.STATUS_COL) return;
   const row = e.range.getRow();
   if (row < CFG.FIRST_DATA_ROW) return;
+  if (e.range.getNumRows() !== 1 || e.range.getNumColumns() !== 1) return;
 
-  const newValue = e.value;                        // selected string, or undefined if cleared
-  if (!newValue || !CFG.ROUTES[newValue]) return;  // not Complete/JNS → do nothing
+  // One cell read: is the edited column the status column? Header lookup, not a fixed letter.
+  const col = e.range.getColumn();
+  const header = String(sheet.getRange(1, col).getValue()).trim();
+  if (header !== CFG.STATUS_HEADER) return;
 
-  moveJob_(sheet, row, newValue, e.oldValue);
+  const newValue = String(e.value || '').trim();   // e.value is undefined when the cell is cleared
+  if (!newValue || !Object.prototype.hasOwnProperty.call(CFG.ROUTES, newValue)) return;
+
+  moveJob_(sheet, row, col, newValue, e.oldValue);
 }
 
 /* ------------------------------------------------------------------ */
@@ -433,23 +441,30 @@ function onEditInstallable(e) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Ask before moving. Guards empty rows, reverts the dropdown on "No", and
- * reports errors without ever deleting a row.
+ * Ask before moving. Guards empty rows, reverts the dropdown on "No", re-checks
+ * the row after the dialog closes, and reports errors without ever deleting a row.
  * @param {Sheet}  sheet       the source sheet
  * @param {number} row         1-based row that was edited
+ * @param {number} statusCol   1-based column of the status cell that was edited
  * @param {string} statusValue "Complete" or "JNS (Job Not Sold)"
- * @param {*}      oldValue    the previous Job Status value (for revert)
+ * @param {*}      oldValue    the previous status value (for revert)
  */
-function moveJob_(sheet, row, statusValue, oldValue) {
+function moveJob_(sheet, row, statusCol, statusValue, oldValue) {
   const route = CFG.ROUTES[statusValue];
   const ui = SpreadsheetApp.getUi();
-  const statusCell = sheet.getRange(row, CFG.STATUS_COL);
+  const statusCell = sheet.getRange(row, statusCol);
 
-
+  // Empty-row guard: no Project Name means this is not a job row.
+  const before = readRowIdentity_(sheet, row);
+  if (!before.name) {
+    revertStatus_(statusCell, oldValue);
+    ui.alert('This row has no ' + CFG.NAME_HEADER + ', so it was not moved.');
+    return;
+  }
 
   const answer = ui.alert(
     'Move this job?',
-    'Move this job to ' + route.label + '?\n\nThis removes it from "' +
+    'Move "' + before.name + '" to ' + route.label + '?\n\nThis removes it from "' +
       CFG.SOURCE_SHEET + '".',
     ui.ButtonSet.YES_NO
   );
@@ -458,15 +473,37 @@ function moveJob_(sheet, row, statusValue, oldValue) {
     return;
   }
 
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(15000)) {
+    revertStatus_(statusCell, oldValue);
+    ui.alert('The sheet is busy; nothing was moved. Set the status again to retry.');
+    return;
+  }
   try {
-    performMove_(sheet, row, statusValue);
-    SpreadsheetApp.getActiveSpreadsheet().toast('Job moved to ' + route.label + ' ✅');
+    // The dialog may have sat open while someone else moved or deleted a row above,
+    // which would shift this row number onto a different job. Re-check before touching anything.
+    const after = readRowIdentity_(sheet, row);
+    if (after.name !== before.name || after.number !== before.number || after.status !== statusValue) {
+      ui.alert('The sheet changed while the dialog was open; nothing was moved.\n\n' +
+               'Find the job, set its status to something else, then back to "' +
+               statusValue + '" to retry.');
+      return;
+    }
+
+    const result = performMove_(sheet, row, statusValue);
+    let msg = 'Job moved to ' + route.label + ' ✅';
+    if (result.addedColumns.length) {
+      msg += '  New columns added to that tab: ' + result.addedColumns.join(', ');
+    }
+    SpreadsheetApp.getActiveSpreadsheet().toast(msg);
   } catch (err) {
-    ui.alert('Move failed — nothing was changed.\n\n' + err.message);
+    ui.alert('Move failed. The job is still on "' + CFG.SOURCE_SHEET + '".\n\n' + err.message);
+  } finally {
+    lock.releaseLock();
   }
 }
 
-/** Restore the Job Status cell to its previous value (clear it if there was none). */
+/** Restore the status cell to its previous value (clear it if there was none). */
 function revertStatus_(statusCell, oldValue) {
   if (oldValue === undefined || oldValue === null) {
     statusCell.clearContent();
@@ -475,16 +512,35 @@ function revertStatus_(statusCell, oldValue) {
   }
 }
 
+/** Read the fields that identify a job row, by header name. A missing header reads as ''. */
+function readRowIdentity_(sheet, row) {
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const idx = buildHeaderIndex(headers);
+  const values = sheet.getRange(row, 1, 1, lastCol).getValues()[0];
+  const pick = function (name) {
+    return idx[name] === undefined ? '' : String(values[idx[name]] || '').trim();
+  };
+  return {
+    name: pick(CFG.NAME_HEADER),
+    number: pick(CFG.NUMBER_HEADER),
+    status: pick(CFG.STATUS_HEADER)
+  };
+}
+
 /* ------------------------------------------------------------------ */
-/* Core move (UI-free, called by the wrapper and the self-test)        */
+/* Core move (UI-free, called by the wrapper)                          */
 /* ------------------------------------------------------------------ */
 
 /**
- * Move columns A–V of `row` on srcSheet to the destination mapped by statusValue.
- * Copies formatting, writes FROZEN computed values (no live formulas), then
- * deletes the source row LAST. Throws before any delete if something fails, so a
- * failure can never lose a row (at worst it leaves an un-moved original).
- * @return {string} the destination sheet name
+ * Move `row` on srcSheet to the destination mapped by statusValue.
+ * Each value lands in the destination column with the same header name, so the
+ * two tabs may differ in column order or count; source headers the destination
+ * lacks are appended to its header row first. Writes FROZEN values (formulas
+ * resolve to their results) plus number formats, then deletes the source row
+ * LAST. Throws before any delete if something fails, so a failure can never
+ * lose a row (at worst it leaves an un-moved original).
+ * @return {{sheet: string, addedColumns: string[]}}
  */
 function performMove_(srcSheet, row, statusValue) {
   const route = CFG.ROUTES[statusValue];
@@ -494,19 +550,51 @@ function performMove_(srcSheet, row, statusValue) {
   const dest = ss.getSheetByName(route.sheet);
   if (!dest) throw new Error('Destination sheet not found: ' + route.sheet);
 
-  const nCols = CFG.LAST_DATA_COL;
-  const srcRange = srcSheet.getRange(row, 1, 1, nCols);
-  const destRow = dest.getLastRow() + 1;
-  const destRange = dest.getRange(destRow, 1, 1, nCols);
+  const srcCols = srcSheet.getLastColumn();
+  const srcHeaders = srcSheet.getRange(1, 1, 1, srcCols).getValues()[0];
+  const srcRange = srcSheet.getRange(row, 1, 1, srcCols);
+  const srcValues = srcRange.getValues()[0];
+  const srcFormats = srcRange.getNumberFormats()[0];
 
-  // 1) Copy formatting only, so the archived row looks identical (currency, %, dates).
-  srcRange.copyTo(destRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
-  // 2) Write frozen values — getValues() resolves formulas to their results.
-  destRange.setValues(srcRange.getValues());
+  // 1) Map destination headers; append any source header the destination lacks.
+  const destHeaders = dest.getLastColumn() > 0
+    ? dest.getRange(1, 1, 1, dest.getLastColumn()).getValues()[0]
+    : [];
+  const destIndex = buildHeaderIndex(destHeaders);
+  const added = [];
+  for (let c = 0; c < srcHeaders.length; c++) {
+    const name = String(srcHeaders[c]).trim();
+    if (!name || destIndex.hasOwnProperty(name)) continue;
+    destHeaders.push(name);
+    destIndex[name] = destHeaders.length - 1;
+    added.push(name);
+  }
+  const width = destHeaders.length;
+  if (dest.getMaxColumns() < width) {
+    dest.insertColumnsAfter(dest.getMaxColumns(), width - dest.getMaxColumns());
+  }
+  if (added.length) {
+    dest.getRange(1, 1, 1, width).setValues([destHeaders]);
+  }
+
+  // 2) Build the destination row by header name; write frozen values + number formats.
+  const outValues = new Array(width).fill('');
+  const outFormats = new Array(width).fill('General');
+  for (let c = 0; c < srcHeaders.length; c++) {
+    const name = String(srcHeaders[c]).trim();
+    if (!name) continue;
+    outValues[destIndex[name]] = srcValues[c];
+    outFormats[destIndex[name]] = srcFormats[c];
+  }
+  const destRow = dest.getLastRow() + 1;
+  if (dest.getMaxRows() < destRow) dest.insertRowsAfter(dest.getMaxRows(), 1);
+  const destRange = dest.getRange(destRow, 1, 1, width);
+  destRange.setNumberFormats([outFormats]);
+  destRange.setValues([outValues]);
   SpreadsheetApp.flush(); // commit the destination write before deleting the source
 
   // 3) Delete the source row LAST; rows below shift up.
   srcSheet.deleteRow(row);
 
-  return route.sheet;
+  return { sheet: route.sheet, addedColumns: added };
 }
