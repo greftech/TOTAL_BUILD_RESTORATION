@@ -718,6 +718,30 @@ function refreshBandingExtent_(sheet) {
 }
 
 /**
+ * Give a freshly created archive row the formatting of the rows around it:
+ * gridlines and borders, fonts, alignment, currency and date number formats.
+ *
+ * Copies from the row ABOVE on the archive tab, not from the source row, so each
+ * archive tab stays internally consistent. Copying from the source drags that
+ * row's own quirks across, and a tracking-sheet row that was itself appended
+ * bare would arrive in the archive just as bare.
+ *
+ * Falls back to the source row when there is no data row above to copy from,
+ * which is the first job ever moved into a tab. Row 1 is the header and is never
+ * a formatting source.
+ */
+function inheritRowFormat_(destRange, destRow, srcRange) {
+  const FMT = SpreadsheetApp.CopyPasteType.PASTE_FORMAT;
+  if (destRow >= 3) {
+    const dest = destRange.getSheet();
+    dest.getRange(destRow - 1, destRange.getColumn(), 1, destRange.getNumColumns())
+        .copyTo(destRange, FMT, false);
+  } else {
+    srcRange.copyTo(destRange, FMT, false);
+  }
+}
+
+/**
  * Row number of this tab's totals row, or 0 when it has none. Scans column A
  * upward from the bottom, since that is where the totals row lives.
  */
@@ -804,8 +828,9 @@ function performMove_(srcSheet, row, statusValue) {
   }
   const destRange = dest.getRange(destRow, 1, 1, width);
 
-  // 1) Formatting, so the archived row looks identical (currency, dates, fills).
-  srcRange.copyTo(destRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+  // 1) Formatting, taken from the archive tab's own rows so each tab stays
+  //    internally consistent. See inheritRowFormat_ for why not from the source.
+  inheritRowFormat_(destRange, destRow, srcRange);
   // 2) Frozen values: getValues() resolves formulas to their results.
   destRange.setValues(srcRange.getValues());
   SpreadsheetApp.flush(); // commit the destination write before deleting the source

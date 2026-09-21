@@ -152,8 +152,14 @@ both running after the row is safely written and both wrapped in try/catch:
 | `inheritRowFormat` | borders and gridlines, fonts, alignment, currency and date number formats | `PASTE_FORMAT`. Runs first. |
 | `inheritRowValidation` | the YES/NO, Project Manager and Job Status dropdowns | Runs second, so it always has the last word. |
 
-A row inserted by hand, or by the Job-Mover above the totals row, inherits all of
-this natively. Only an append does not.
+A row inserted by hand inherits all of this natively. An append does not.
+
+The Job-Mover needed the same treatment on its side, and takes it from the row
+above **on the archive tab** rather than from the source row. Copying from the
+source drags that row's own quirks across, and a tracking-sheet row that was
+itself appended bare would land in the archive just as bare. When the archive has
+no data row to copy from, which is the first job ever moved into a tab, it falls
+back to the source row. Row 1 is never a formatting source.
 
 ## Open item: column A's flag colour
 
