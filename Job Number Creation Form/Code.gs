@@ -48,6 +48,22 @@ function onFormSubmit(e) {
 // ============================================================
 // NEW LEAD FORM HANDLER
 // ============================================================
+// Answers are looked up by the Google Form QUESTION TITLE, exactly as typed on
+// the form, and written to the sheet by COLUMN HEADER, exactly as typed in row 1.
+// Neither lookup errors when it misses: a wrong question title yields a blank,
+// and a wrong header is logged and thrown away. Both have cost real data before,
+// so if you rename a question on the form or a column on the sheet, change it
+// here in the same sitting.
+//
+// Questions read: Project Name, Project Manager, Type of Job, Project Category,
+//   Target Year (only fill out if not current year), Create Project Folder?,
+//   Create Project Number?, Project Address, Contact Number, Email,
+//   Contract Value, Estimated Cost, Job Completion Date, Insurance Company,
+//   Other Insurance Company, Claim Number, Date of Loss, Type of Loss,
+//   Referral Name, Referral Number.
+//
+// "Project Category" drives folder routing and has no column on the sheet, so it
+// is deliberately not stored. Everything else must land somewhere.
 
 function onLeadFormSubmit(e) {
   var answers = parseFormAnswers(e);
@@ -93,6 +109,8 @@ function onLeadFormSubmit(e) {
     "Create Job #?": createJobCell,
     "Project Number": projectNumber,
     "Project Name": projectName,
+    "Project Manager": answers["Project Manager"] || "",
+    "Type of Job": answers["Type of Job"] || "",
     "Project Category": category,
     "Project Address": answers["Project Address"] || "",
     "Contact Number": answers["Contact Number"] || "",
