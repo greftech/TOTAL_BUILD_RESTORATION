@@ -7,7 +7,12 @@ var TEMPLATE_MAP = {
   "REPAIRS_Large Loss": "12JxI_oJC-zbXkAw_rqxIUtLI9QIO3hD7"
 };
 
-var TRACKING_SHEET_ID = '1OD-IkT6S43YqMwqdPhNNC4kNsPTqcmK7JXKn3hF_aaw';
+// Production TBR Job Numbers spreadsheet. MUST match TRACKING_SHEET_ID in the
+// Job Number Creation Sheet Script, which is bound to that same spreadsheet.
+// The value committed here was a test copy ('1OD-IkT6...') for the life of this
+// file, so anyone pasting the repo copy into production silently rerouted every
+// new lead into the test sheet. Verify this line before you save.
+var TRACKING_SHEET_ID = '1D6kppfGobZ42vRSN6xVTw7mS8YdmthXh1ICuudCmeFE';
 var TRACKING_SHEET_TAB = 'TBR Job Numbers';
 var TBR_PREFIX = 'TBR-';
 

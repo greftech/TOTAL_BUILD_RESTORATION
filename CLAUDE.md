@@ -21,8 +21,20 @@ Google Apps Script projects supporting Total Build Restoration's internal operat
 ## Conventions
 
 - Apps Script projects: one `.gs` file per logical unit, kept flat. The Apps Script editor doesn't preserve subfolders, but we mirror the project name as a folder here for clarity.
-- Configuration constants (sheet IDs, template folder IDs, prefixes) sit at the top of each `Code.gs`. The Sheet Script project intentionally points at a **test copy** of the tracking sheet — production IDs live in `Job Number Creation Form/Code.gs`.
+- Configuration constants (sheet IDs, template folder IDs, prefixes) sit at the top of each `Code.gs`. **Both** the Sheet Script and the Form script must point at the same production spreadsheet, `1D6kpp...`; the Sheet Script is bound to it and the Form script opens it by ID. An earlier version of this note had that backwards, and the Form script sat on a test copy (`1OD-IkT6...`) for the life of the file. The Sheet Script's file header still reads "TEST BUNDLE ... update this" above a production ID; it is stale wording, left alone at Joe's request. To test against a copy, change the constant in the copy's own script project only, and never commit a test ID.
 - Secrets (e.g. `GEMINI_API_KEY`) live in Apps Script **Script Properties** on the owning library project, never in source. Don't paste keys into `.gs` files.
+
+## Tests
+
+`node tests/run.js` runs every suite against the real `.gs` sources using fake
+Sheets objects built from the production layout. No network, no Google account,
+no spreadsheet. Run it before handing Joe anything to paste.
+
+It covers the Job-Mover (insert position, totals bounds, banding extent, format
+inheritance, the header guard), the lead form (field mapping, dropdown and
+format inheritance, fault injection) and a config check that both scripts point
+at the same production spreadsheet. That last one exists because a test-copy ID
+sat committed in the Form script for the life of the file.
 
 ## Working with this repo
 
