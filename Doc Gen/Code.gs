@@ -452,7 +452,7 @@ function initializeConfigSheet() {
       ['Contract', '{{loss_date}}', 'Date of Loss', 'date'],
       ['Contract', '{{loss_type}}', 'Type of Loss', 'text'],
       ['Contract', '{{insurance_carrier}}', 'Insurance', 'text'],
-      ['Contract', '{{claim_number}}', 'Claim number', 'text'],
+      ['Contract', '{{claim_number}}', 'Claim Number', 'text'],
       ['Contract', '{{job_number}}', 'Project Number', 'text']
     ]));
 
@@ -464,7 +464,7 @@ function initializeConfigSheet() {
       ['Contract', 'Date of Loss'],
       ['Contract', 'Type of Loss'],
       ['Contract', 'Insurance'],
-      ['Contract', 'Claim number']
+      ['Contract', 'Claim Number']
     ]));
 
   summary.push(ensureTab_(ss, ACTIVITY_TAB,

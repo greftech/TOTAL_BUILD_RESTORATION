@@ -136,6 +136,55 @@ ck('names column D', !!o.r.err && o.r.err.indexOf('Column D')!==-1);
 ck('source row NOT deleted', w.src._v.length===2);
 ck('nothing written to the archive', w.dst._v.length===2);
 
+suite('Totals: rebuilt after a manual row delete');
+// Completed-style tab: three jobs then TOTAL, with sums already spanning them.
+w = moverWorld([BASE, jobRow('A',1000,600,550), jobRow('B',2000,1200,1100),
+                jobRow('C',3000,1800,1700), totalsRow()]);
+let sb2 = sandbox(w.ss); sb2.__ss = w.ss; sb2.__dst = w.dst;
+load(MOVER, sb2,
+  'globalThis.__api2 = { refreshAllTotals_, onChangeInstallable, refreshTotalsNow, findTotalsRow_ };');
+// Someone deletes job B by hand. Sheets would shrink the SUM itself, but a
+// totals cell that was typed rather than written by the script would not.
+w.dst.deleteRow(3);
+w.dst._fx[3][COL('Contract Value')] = '';              // simulate a non-formula totals cell
+w.dst._v[3][COL('Contract Value')] = '9999';           // a stale typed number
+sb2.__api2.onChangeInstallable({ changeType: 'REMOVE_ROW' });
+ck('totals row found after the delete', sb2.__api2.findTotalsRow_(w.dst) === 4);
+ck('Contract Value sum rewritten to span J2:J3',
+   w.dst._fx[3][COL('Contract Value')] === '=SUM(J2:J3)', w.dst._fx[3][COL('Contract Value')]);
+ck('the stale typed number was replaced by a formula',
+   w.dst._v[3][COL('Contract Value')] === '<calc>', String(w.dst._v[3][COL('Contract Value')]));
+ck('Estimated Cost rebuilt too', w.dst._fx[3][COL('Estimated Cost')] === '=SUM(K2:K3)');
+ck('Actual Cost rebuilt too', w.dst._fx[3][COL('Actual Cost')] === '=SUM(L2:L3)');
+
+suite('Totals: the manual rerun function');
+w = moverWorld([BASE, jobRow('A',10,5,4), totalsRow()]);
+let sb3 = sandbox(w.ss);
+load(MOVER, sb3, 'globalThis.__api3 = { refreshTotalsNow };');
+sb3.__api3.refreshTotalsNow();
+ck('rebuilt the sums', w.dst._fx[2][COL('Contract Value')] === '=SUM(J2:J2)',
+   w.dst._fx[2][COL('Contract Value')]);
+ck('said which tab it touched', sb3.__logs.some(m => /Totals rebuilt on: TBR - JNS/.test(m)),
+   sb3.__logs.join(' | '));
+
+suite('Totals: rerun on a tab with no totals row says so and does not throw');
+w = moverWorld([BASE, jobRow('A',10,5,4)]);
+let sb4 = sandbox(w.ss);
+load(MOVER, sb4, 'globalThis.__api4 = { refreshTotalsNow };');
+let threw = false;
+try { sb4.__api4.refreshTotalsNow(); } catch (e) { threw = true; }
+ck('did not throw', !threw);
+ck('explained that no totals row was found',
+   sb4.__logs.some(m => /No totals row found/.test(m)), sb4.__logs.join(' | '));
+ck('wrote no formulas', w.dst._fx.every(r => r.every(c => c === '')));
+
+suite('Totals: a non-row-count change is ignored');
+w = moverWorld([BASE, jobRow('A',10,5,4), totalsRow()]);
+let sb5 = sandbox(w.ss);
+load(MOVER, sb5, 'globalThis.__api5 = { onChangeInstallable };');
+sb5.__api5.onChangeInstallable({ changeType: 'FORMAT' });
+ck('FORMAT change does not rewrite totals', w.dst._fx[2][COL('Contract Value')] === '');
+
 /* ================= Lead form: what an appended row inherits ================= */
 
 const RULES = { [COL('Create Job #?')]:'YESNO', [COL('Project Manager')]:'PM_LIST',
