@@ -12,11 +12,17 @@ const ROOT = path.join(__dirname, '..');
 const MOVER = path.join(ROOT, 'Job Number Creation Sheet Script', 'Code.gs');
 const FORM  = path.join(ROOT, 'Job Number Creation Form', 'Code.gs');
 
+// Live layout as of the header dump on 2026-10-08. Since 2026-09-21 the sheet
+// gained "Profit $" at M and "Type of Job" at O, and "Job Completion Date"
+// moved from N to the far right. Nothing in the scripts keys off position, but
+// these fixtures must track reality or the tests stop meaning anything.
 const BASE = ['Create Job #?','Project Number','Project Name','Project Manager','Project Folder',
   'Project Address','Contact Number','Email','Job Status','Contract Value','Estimated Cost',
-  'Actual Cost','Job Profit %','Job Completion Date','Insurance','Claim Number','Date of Loss',
-  'Type of Loss','Referral Name','Referral Number','Job # Status','Project Status','Estimated Completion'];
-const W = BASE.length;
+  'Actual Cost','Profit $','Job Profit %','Type of Job','Insurance','Claim Number','Date of Loss',
+  'Type of Loss','Referral Name','Referral Number','Job # Status','Project Status',
+  'Estimated Completion','Job Completion Date'];
+const W = BASE.length;        // 25, A through Y
+const COL = n => BASE.indexOf(n);
 
 let pass = 0, fail = 0;
 const ck = (n, c, d) => {
@@ -35,8 +41,11 @@ const load = (file, sb, tail) => {
 
 function jobRow(tag, c, e, a) {
   const r = new Array(W).fill('');
-  r[0]='YES'; r[2]='Job '+tag; r[3]='PM '+tag; r[8]='JNS (Job Not Sold)';
-  r[9]=c; r[10]=e; r[11]=a;
+  r[COL('Create Job #?')]='YES';
+  r[COL('Project Name')]='Job '+tag;
+  r[COL('Project Manager')]='PM '+tag;
+  r[COL('Job Status')]='JNS (Job Not Sold)';
+  r[COL('Contract Value')]=c; r[COL('Estimated Cost')]=e; r[COL('Actual Cost')]=a;
   return r;
 }
 const totalsRow = () => { const r = new Array(W).fill(''); r[0]='TOTAL'; return r; };
@@ -44,9 +53,9 @@ const totalsRow = () => { const r = new Array(W).fill(''); r[0]='TOTAL'; return 
 function moverWorld(destRows, opts) {
   opts = opts || {};
   const src = makeSheet('TBR Job Numbers', [BASE, jobRow('X',100,60,55)],
-                        { formatTag:'SRC', banding: opts.srcBand === undefined ? 'B2:W2' : opts.srcBand });
+                        { formatTag:'SRC', banding: opts.srcBand === undefined ? 'B2:Y2' : opts.srcBand });
   const dst = makeSheet('TBR - JNS', destRows,
-                        { formatTag:'DEST', banding: opts.destBand === undefined ? 'B2:W2' : opts.destBand });
+                        { formatTag:'DEST', banding: opts.destBand === undefined ? 'B2:Y2' : opts.destBand });
   const ss = { getSheetByName: n => ({'TBR Job Numbers':src,'TBR - JNS':dst}[n] || null) };
   src._ss = ss; dst._ss = ss;
   return { src, dst, ss };
@@ -67,10 +76,16 @@ ck('no error', !o.r.err, o.r.err);
 ck('job inserted at row 4, above totals', w.dst._v[3] && w.dst._v[3][2]==='Job X');
 ck('TOTAL pushed to row 5', w.dst._v[4] && w.dst._v[4][0]==='TOTAL');
 ck('existing jobs undisturbed', w.dst._v[1][2]==='Job A' && w.dst._v[2][2]==='Job B');
-ck('Contract Value sum spans J2:J4', w.dst._fx[4][9]==='=SUM(J2:J4)', w.dst._fx[4][9]);
-ck('Estimated Cost sum spans K2:K4', w.dst._fx[4][10]==='=SUM(K2:K4)', w.dst._fx[4][10]);
-ck('Actual Cost sum spans L2:L4', w.dst._fx[4][11]==='=SUM(L2:L4)', w.dst._fx[4][11]);
-ck('Job Profit % NOT summed', w.dst._fx[4][12]==='');
+ck('Contract Value sum spans J2:J4', w.dst._fx[4][COL('Contract Value')]==='=SUM(J2:J4)',
+   w.dst._fx[4][COL('Contract Value')]);
+ck('Estimated Cost sum spans K2:K4', w.dst._fx[4][COL('Estimated Cost')]==='=SUM(K2:K4)',
+   w.dst._fx[4][COL('Estimated Cost')]);
+ck('Actual Cost sum spans L2:L4', w.dst._fx[4][COL('Actual Cost')]==='=SUM(L2:L4)',
+   w.dst._fx[4][COL('Actual Cost')]);
+ck('Job Profit % NOT summed, averaging percentages is meaningless',
+   w.dst._fx[4][COL('Job Profit %')]==='');
+ck('Profit $ NOT summed either, pending Joe\'s call on adding it',
+   w.dst._fx[4][COL('Profit $')]==='');
 ck('source row deleted', w.src._v.length===1);
 ck('formatting came from the archive tab, not the source row',
    w.dst._fmt[3].every(c=>c==='DEST'), JSON.stringify(w.dst._fmt[3].slice(0,4)));
@@ -90,11 +105,12 @@ ck('no error', !o.r.err, o.r.err);
 ck('job landed at row 2', w.dst._v[1][2]==='Job X');
 ck('empty archive falls back to the source row, never the header',
    w.dst._fmt[1].every(c=>c==='SRC'), JSON.stringify(w.dst._fmt[1].slice(0,4)));
-ck('sum spans J2:J2', w.dst._fx[2][9]==='=SUM(J2:J2)', w.dst._fx[2][9]);
+ck('sum spans J2:J2', w.dst._fx[2][COL('Contract Value')]==='=SUM(J2:J2)',
+   w.dst._fx[2][COL('Contract Value')]);
 
 suite('Mover: banding follows the data extent');
-w = moverWorld([BASE, jobRow('A',1,1,1), totalsRow()], { destBand:'B2:W3' }); o = move(w);
-ck('destination banding resized to B2:W4', w.dst._bands[0].getRange().getA1Notation()==='B2:W4',
+w = moverWorld([BASE, jobRow('A',1,1,1), totalsRow()], { destBand:'B2:Y3' }); o = move(w);
+ck('destination banding resized to B2:Y4', w.dst._bands[0].getRange().getA1Notation()==='B2:Y4',
    w.dst._bands[0].getRange().getA1Notation());
 ck('source banding untouched (no data rows left)', w.src._bandSet===0);
 
@@ -106,12 +122,12 @@ ck('job still moved', w.dst._v[1][2]==='Job X');
 
 suite('Mover: helpers');
 w = moverWorld([BASE, jobRow('A',1,1,1), totalsRow()]); o = move(w);
-const probe = r => makeSheet('t', r, { banding:'B2:W3' });
+const probe = r => makeSheet('t', r, { banding:'B2:Y3' });
 ck('finds the TOTAL row', o.api.findTotalsRow_(probe([BASE, jobRow('A',1,1,1), totalsRow()]))===3);
 const lower = totalsRow(); lower[0]='total';
 ck('label match ignores case', o.api.findTotalsRow_(probe([BASE, jobRow('A',1,1,1), lower]))===3);
 ck('returns 0 when absent', o.api.findTotalsRow_(probe([BASE, jobRow('A',1,1,1)]))===0);
-ck('last header column is W', o.api.lastHeaderColumn_(probe([BASE, jobRow('A',1,1,1)]))===23);
+ck('last header column is Y', o.api.lastHeaderColumn_(probe([BASE, jobRow('A',1,1,1)]))===25);
 
 suite('Mover: header guard still refuses a mismatched tab');
 w = moverWorld([BASE.filter(h=>h!=='Project Manager'), totalsRow()]); o = move(w);
@@ -122,18 +138,20 @@ ck('nothing written to the archive', w.dst._v.length===2);
 
 /* ================= Lead form: what an appended row inherits ================= */
 
-const RULES = { 0:'YESNO', 3:'PM_LIST', 8:'STATUS_LIST' };
+const RULES = { [COL('Create Job #?')]:'YESNO', [COL('Project Manager')]:'PM_LIST',
+                [COL('Job Status')]:'STATUS_LIST' };
 function formSheet(nRows, opts) {
   opts = opts || {};
   const rows = [BASE.slice()], dv = [new Array(W).fill(null)];
   for (let i=0;i<nRows;i++) {
-    const r = new Array(W).fill(''); r[0]='YES'; r[2]='Job '+(i+1); rows.push(r);
+    const r = new Array(W).fill(''); r[COL('Create Job #?')]='YES';
+    r[COL('Project Name')]='Job '+(i+1); rows.push(r);
     const line = new Array(W).fill(null);
     if (!opts.noRules) for (const k in RULES) line[k]=RULES[k];
     dv.push(line);
   }
   const sh = makeSheet('TBR Job Numbers', rows,
-    { validations: dv, banding: opts.band === undefined ? 'B2:W'+(nRows+1) : opts.band });
+    { validations: dv, banding: opts.band === undefined ? 'B2:Y'+(nRows+1) : opts.band });
   return sh;
 }
 function append(sheet, vals) {
@@ -147,19 +165,19 @@ let sh = formSheet(3);
 let a = append(sh, { 'Project Name':'New Lead' });
 ck('no error', !a.err, a.err);
 ck('row appended at row 5', sh.getLastRow()===5);
-ck('column A got the YES/NO list', sh._dv[4][0]==='YESNO');
-ck('column D got the Project Manager list', sh._dv[4][3]==='PM_LIST');
-ck('column I got the Job Status list', sh._dv[4][8]==='STATUS_LIST');
-ck('a column with no rule stays null', sh._dv[4][2]===null);
+ck('column A got the YES/NO list', sh._dv[4][COL('Create Job #?')]==='YESNO');
+ck('column D got the Project Manager list', sh._dv[4][COL('Project Manager')]==='PM_LIST');
+ck('column I got the Job Status list', sh._dv[4][COL('Job Status')]==='STATUS_LIST');
+ck('a column with no rule stays null', sh._dv[4][COL('Project Name')]===null);
 ck('validation written in one call', sh._dvSetCalls===1, String(sh._dvSetCalls));
 ck('inherited borders/fonts/number formats', sh._fmt[4].every(c=>c==='FMT'));
 ck('format copied in one call', sh._fmtCopies===1, String(sh._fmtCopies));
-ck('format copy did not clobber the values', sh._v[4][2]==='New Lead');
-ck('banding stretched to B2:W5', sh._bands[0].getRange().getA1Notation()==='B2:W5',
+ck('format copy did not clobber the values', sh._v[4][COL('Project Name')]==='New Lead');
+ck('banding stretched to B2:Y5', sh._bands[0].getRange().getA1Notation()==='B2:Y5',
    sh._bands[0].getRange().getA1Notation());
 
 suite('Form append: very first data row inherits nothing from the header');
-sh = formSheet(0, { band:'B2:W2' }); a = append(sh, { 'Project Name':'First Ever' });
+sh = formSheet(0, { band:'B2:Y2' }); a = append(sh, { 'Project Name':'First Ever' });
 ck('no error', !a.err, a.err);
 ck('row landed at row 2', sh.getLastRow()===2);
 ck('no validation taken from the header', sh._dv[1].every(c=>c===null));
@@ -187,7 +205,8 @@ ck('all three failures logged, not swallowed', a.logs.length===3, JSON.stringify
 
 /* ================= Lead form: every collected field reaches a column ================= */
 
-const HEADERS = BASE.concat(['Type of Job','Created Date']);
+// Type of Job already exists at O. Created Date is the one header still to add.
+const HEADERS = BASE.concat(['Created Date']);
 const ANSWERS = {
   'Project Name':'Smith, John', 'Project Manager':'Dana Reyes', 'Type of Job':'Reconstruction',
   'Project Category':'MITIGATION', 'Create Project Folder?':'No', 'Create Project Number?':'No',
