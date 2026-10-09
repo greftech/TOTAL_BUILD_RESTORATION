@@ -499,54 +499,7 @@ function onEditInstallable(e) {
  */
 function onChangeInstallable(e) {
   if (!e || (e.changeType !== 'INSERT_ROW' && e.changeType !== 'REMOVE_ROW')) return;
-  const ss = SpreadsheetApp.getActive();
-  refreshAllTotals_(ss);
-  refreshAllBandingExtents_(ss);
-}
-
-/**
- * Rebuild every archive tab's totals so each sum spans exactly its data rows.
- *
- * Sheets normally adjusts a SUM range by itself when a row inside it is deleted,
- * but not in two cases that matter here: deleting every data row leaves the
- * range pointing at nothing, and a totals cell somebody typed a number into was
- * never a formula to adjust in the first place. Rewriting the bounds outright
- * covers both, and costs nothing when they were already right.
- *
- * @return {string[]} one entry per tab whose totals were rebuilt.
- */
-function refreshAllTotals_(ss) {
-  const touched = [];
-  for (const key in CFG.ROUTES) {
-    const sh = ss.getSheetByName(CFG.ROUTES[key].sheet);
-    if (!sh) continue;
-    const totalsRow = findTotalsRow_(sh);
-    if (!totalsRow) continue;
-    updateTotals_(sh, totalsRow);
-    touched.push(sh.getName() + ' (row ' + totalsRow + ')');
-  }
-  return touched;
-}
-
-/**
- * Run this by hand from the Apps Script editor to rebuild the totals and
- * re-stretch the striping, after deleting rows on an archive tab or any other
- * edit the On change trigger did not catch.
- *
- * Safe to run at any time and as often as you like. It only recalculates; it
- * moves nothing, deletes nothing, and creates nothing.
- */
-function refreshTotalsNow() {
-  const ss = SpreadsheetApp.getActive();
-
-  const totals = refreshAllTotals_(ss);
-  Logger.log(totals.length
-    ? 'Totals rebuilt on: ' + totals.join(', ')
-    : 'No totals row found on any archive tab. Is "' + TOTALS.LABEL +
-      '" still in column A of the totals row?');
-
-  refreshAllBandingExtents_(ss);
-  Logger.log('Striping ranges refreshed. Done.');
+  refreshAllBandingExtents_(SpreadsheetApp.getActive());
 }
 
 /** Refresh the striped range on the main tab and on every archive tab. */
